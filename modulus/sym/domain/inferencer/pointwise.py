@@ -1,0 +1,87 @@
+import sys
+sys.path.append(
+    '/workspace/hesensen/paper_reprod/PaConvert/paddle_project_hss/utils')
+import paddle_aux
+import paddle
+from typing import Dict, List, Union, Callable
+from pathlib import Path
+import inspect
+import numpy as np
+from modulus.sym.domain.inferencer import Inferencer
+from modulus.sym.domain.constraint import Constraint
+from modulus.sym.graph import Graph
+from modulus.sym.key import Key
+from modulus.sym.node import Node
+from modulus.sym.distributed import DistributedManager
+from modulus.sym.utils.io import InferencerPlotter
+from modulus.sym.utils.io.vtk import var_to_polyvtk, VTKBase, VTKUniformGrid
+from modulus.sym.dataset import DictInferencePointwiseDataset
+
+
+class PointwiseInferencer(Inferencer):
+    """
+    Pointwise Inferencer that allows inferencing on pointwise data
+
+    Parameters
+    ----------
+    nodes : List[Node]
+        List of Modulus Nodes to unroll graph with.
+    invar : Dict[str, np.ndarray (N, 1)]
+        Dictionary of numpy arrays as input.
+    output_names : List[str]
+        List of desired outputs.
+    batch_size : int, optional
+            Batch size used when running validation, by default 1024
+    plotter : InferencerPlotter
+        Modulus plotter for showing results in tensorboard.
+    requires_grad : bool = False
+        If automatic differentiation is needed for computing results.
+    """
+
+    def __init__(self, nodes: List[Node], invar: Dict[str, np.array],
+        output_names: List[str], batch_size: int=1024, plotter:
+        InferencerPlotter=None, requires_grad: bool=False, model=None):
+        self.dataset = DictInferencePointwiseDataset(invar=invar,
+            output_names=output_names)
+        self.dataloader = Constraint.get_dataloader(dataset=self.dataset,
+            batch_size=batch_size, shuffle=False, drop_last=False,
+            num_workers=0, distributed=False, infinite=False)
+        if model is None:
+            self.model = Graph(nodes, Key.convert_list(self.dataset.
+                invar_keys), Key.convert_list(self.dataset.outvar_keys))
+        else:
+            self.model = model
+        self.manager = DistributedManager()
+        self.place = self.manager.place
+        self.model.to(self.place)
+        self.stop_gradient = not requires_grad
+        self.forward = (self.forward_grad if requires_grad else self.
+            forward_nograd)
+        self.plotter = plotter
+
+    def eval_epoch(self):
+        invar_cpu = {key: [] for key in self.dataset.invar_keys}
+        predvar_cpu = {key: [] for key in self.dataset.outvar_keys}
+        for i, (invar0,) in enumerate(self.dataloader):
+            invar = Constraint._set_device(invar0, device=self.place,
+                requires_grad=not self.stop_gradient)
+            pred_outvar = self.forward(invar)
+            invar_cpu = {key: (value + [invar0[key]]) for key, value in
+                invar_cpu.items()}
+            predvar_cpu = {key: (value + [pred_outvar[key].cpu().detach().
+                numpy()]) for key, value in predvar_cpu.items()}
+        invar = {key: np.concatenate(value) for key, value in invar_cpu.items()
+            }
+        predvar = {key: np.concatenate(value) for key, value in predvar_cpu
+            .items()}
+        return invar, predvar
+
+    def save_results(self, name, results_dir, writer, save_filetypes, step):
+        invar, predvar = self.eval_epoch()
+        if 'np' in save_filetypes:
+            np.savez(results_dir + name, {**invar, **predvar})
+        if 'vtk' in save_filetypes:
+            var_to_polyvtk({**invar, **predvar}, results_dir + name)
+        if self.plotter is not None:
+            self.plotter._add_figures('Inferencers', name, results_dir,
+                writer, step, invar, predvar)
