@@ -20,7 +20,7 @@ import numpy as np
 import sympy as sp
 from sympy import I
 import random, itertools
-from modulus.sym.utils.sympy.torch_printer import torch_lambdify
+from modulus.sym.utils.sympy.paddle_printer import paddle_lambdify
 
 x, y, z = sp.symbols("x, y ,z", real=True)
 
@@ -300,7 +300,7 @@ class Test_Function:
                     x0
                 ) + float(f_sympy)
         else:
-            return torch_lambdify(f_sympy, var_list, separable=True)
+            return paddle_lambdify(f_sympy, var_list, separable=True)
 
     def lambdify_fcn_list(self):
         self.test_lambda_dict = {}
@@ -316,7 +316,7 @@ class Test_Function:
             for f_sympy in self.test_sympy_dict[k]:
                 self.test_lambda_dict[k].append(
                     Test_Function.lambdify(f_sympy, var_list)
-                )  ### use torch_lambdify
+                )  ### use paddle_lambdify
 
     def eval_test(self, ind, x, y=None, z=None):
         # return N*M tensor
@@ -598,7 +598,9 @@ class RBF_Function:
 
         for k in self.test_sympy_dict.keys():
             f_sympy = self.test_sympy_dict[k]
-            self.test_lambda_dict[k] = torch_lambdify(f_sympy, var_list, separable=True)
+            self.test_lambda_dict[k] = paddle_lambdify(
+                f_sympy, var_list, separable=True
+            )
 
     def eval_test(
         self,

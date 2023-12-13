@@ -82,8 +82,8 @@ class Node:
         node : Node
         """
 
-        from modulus.sym.utils.sympy.torch_printer import (
-            torch_lambdify,
+        from modulus.sym.utils.sympy.paddle_printer import (
+            paddle_lambdify,
             _subs_derivatives,
             SympyToTorch,
         )

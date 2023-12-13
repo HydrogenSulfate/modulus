@@ -28,7 +28,7 @@ Sympy
    :members:
    :show-inheritance:
 
-.. automodule:: modulus.sym.utils.sympy.torch_printer
+.. automodule:: modulus.sym.utils.sympy.paddle_printer
    :members:
    :show-inheritance:
 

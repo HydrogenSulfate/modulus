@@ -14,7 +14,7 @@
 
 import paddle
 import numpy as np
-from modulus.sym.utils.sympy import torch_lambdify
+from modulus.sym.utils.sympy import paddle_lambdify
 import sympy
 
 
@@ -25,7 +25,7 @@ def test_lambdify():
     x_np = np.random.random(10)
     y_np = np.random.random(10)
     expr_np = np.maximum(np.sin(x_np), np.cos(y_np))
-    lam_tf = torch_lambdify(expr, ["x", "y"])
+    lam_tf = paddle_lambdify(expr, ["x", "y"])
     device = str("cuda:0" if paddle.device.cuda.device_count() >= 1 else "cpu").replace(
         "cuda", "gpu"
     )
