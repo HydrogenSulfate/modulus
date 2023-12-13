@@ -1,12 +1,23 @@
-import sys
-sys.path.append(
-    '/workspace/hesensen/paper_reprod/PaConvert/paddle_project_hss/utils')
-import paddle_aux
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import os
 import numpy as np
 from typing import List, Union, Tuple, Callable
 from omegaconf import DictConfig
 import warnings
+
 from modulus.sym.distributed.manager import DistributedManager
 from modulus.sym.trainer import Trainer
 from modulus.sym.domain import Domain
@@ -39,24 +50,40 @@ class SequentialSolver(Solver):
         iteration.
     """
 
-    def __init__(self, cfg: DictConfig, domains: List[Tuple[int, Domain]],
-        custom_update_operation: Union[Callable, None]=None):
-        assert len(set([d.name for _, d in domains])) == len(domains
-            ), 'domains need to have unique names, ' + str([d.name for _, d in
-            domains])
-        assert not cfg.training.ntk.use_ntk, 'ntk is not supported with SequentialSolver'
+    def __init__(
+        self,
+        cfg: DictConfig,
+        domains: List[Tuple[int, Domain]],
+        custom_update_operation: Union[Callable, None] = None,
+    ):
+        # check that domains have different names
+        assert len(set([d.name for _, d in domains])) == len(
+            domains
+        ), "domains need to have unique names, " + str([d.name for _, d in domains])
+
+        # check not using ntk with seq solver
+        assert (
+            not cfg.training.ntk.use_ntk
+        ), "ntk is not supported with SequentialSolver"
+
+        # set domains
         self.domains = domains
+
+        # set update operation after solving each domain
         self.custom_update_operation = custom_update_operation
+
+        # load rest of initializations
         Trainer.__init__(self, cfg)
+
+        # load current index
         self.load_iteration_step()
 
     def load_iteration_step(self):
         try:
-            iteration_step_file = open(self._network_dir +
-                '/current_step.txt', 'r')
+            iteration_step_file = open(self._network_dir + "/current_step.txt", "r")
             contents = iteration_step_file.readlines()[0]
-            domain_index = int(contents.split(' ')[0])
-            iteration_index = int(contents.split(' ')[1])
+            domain_index = int(contents.split(" ")[0])
+            iteration_index = int(contents.split(" ")[1])
         except:
             domain_index = 0
             iteration_index = 0
@@ -64,10 +91,10 @@ class SequentialSolver(Solver):
         self.iteration_index = iteration_index
 
     def save_iteration_step(self):
-        iteration_step_file = open(self._network_dir + '/current_step.txt', 'w'
-            )
-        iteration_step_file.write(str(self.domain_index) + ' ' + str(self.
-            iteration_index))
+        iteration_step_file = open(self._network_dir + "/current_step.txt", "w")
+        iteration_step_file.write(
+            str(self.domain_index) + " " + str(self.iteration_index)
+        )
 
     @property
     def domain(self):
@@ -75,28 +102,48 @@ class SequentialSolver(Solver):
 
     @property
     def network_dir(self):
-        dir_name = self._network_dir + '/' + self.domain.name
+        dir_name = self._network_dir + "/" + self.domain.name
         if self.domains[self.domain_index][0] > 1:
-            dir_name += '_' + str(self.iteration_index).zfill(4)
+            dir_name += "_" + str(self.iteration_index).zfill(4)
         return dir_name
 
     def solve(self, sigterm_handler=None):
-        if self.cfg.run_mode == 'train':
+        if self.cfg.run_mode == "train":
+            # make directory if doesn't exist
             if DistributedManager().rank == 0:
                 os.makedirs(self.network_dir, exist_ok=True)
+
+            # run train loop for each domain and each index
+            # solve for each domain in seq_train_domin
             for domain_index in range(self.domain_index, len(self.domains)):
-                for iteration_index in range(self.iteration_index, self.
-                    domains[domain_index][0]):
+                # solve for number of iterations in train_domain
+                for iteration_index in range(
+                    self.iteration_index, self.domains[domain_index][0]
+                ):
+
+                    # set internal domain index and iteration index
                     self.domain_index = domain_index
                     self.iteration_index = iteration_index
+
+                    # save current iteration step
                     self.save_iteration_step()
-                    self.log.info('Solving for Domain ' + str(self.domain.
-                        name) + ', iteration ' + str(self.iteration_index))
+
+                    # solve for domain
+                    self.log.info(
+                        "Solving for Domain "
+                        + str(self.domain.name)
+                        + ", iteration "
+                        + str(self.iteration_index)
+                    )
                     self._train_loop(sigterm_handler)
+
+                    # run user defined custom update operation
                     if self.custom_update_operation is not None:
                         self.custom_update_operation()
-        elif self.cfg.run_mode == 'eval':
+
+        elif self.cfg.run_mode == "eval":
             raise NotImplementedError(
-                'eval mode not implemented for sequential training')
+                "eval mode not implemented for sequential training"
+            )
         else:
-            raise RuntimeError('Invalid run mode')
+            raise RuntimeError("Invalid run mode")

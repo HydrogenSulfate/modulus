@@ -1,3 +1,17 @@
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from sympy import Symbol, Abs
 import numpy as np
 from .geometry import Geometry, csg_curve_naming
@@ -19,19 +33,37 @@ class Point1D(Geometry):
     """
 
     def __init__(self, point, parameterization=Parameterization()):
-        x = Symbol('x')
-        curve_parameterization = Parameterization({Symbol(csg_curve_naming(
-            0)): (0, 1)})
+        # make sympy symbols to use
+        x = Symbol("x")
+
+        # curves for each side
+        curve_parameterization = Parameterization({Symbol(csg_curve_naming(0)): (0, 1)})
         curve_parameterization = Parameterization.combine(
-            curve_parameterization, parameterization)
-        pt_1 = SympyCurve(functions={'x': point, 'normal_x': 1.0}, area=1.0,
-            parameterization=curve_parameterization)
+            curve_parameterization, parameterization
+        )
+        pt_1 = SympyCurve(
+            functions={"x": point, "normal_x": 1.0},
+            area=1.0,
+            parameterization=curve_parameterization,
+        )
         curves = [pt_1]
+
+        # calculate SDF
         sdf = x - point
-        bounds = Bounds({Parameter('x'): (point, point)}, parameterization=
-            parameterization)
-        super().__init__(curves, _sympy_sdf_to_sdf(sdf), dims=1, bounds=
-            bounds, parameterization=parameterization)
+
+        # calculate bounds
+        bounds = Bounds(
+            {Parameter("x"): (point, point)}, parameterization=parameterization
+        )
+
+        # initialize
+        super().__init__(
+            curves,
+            _sympy_sdf_to_sdf(sdf),
+            dims=1,
+            bounds=bounds,
+            parameterization=parameterization,
+        )
 
 
 class Line1D(Geometry):
@@ -49,20 +81,41 @@ class Line1D(Geometry):
     """
 
     def __init__(self, point_1, point_2, parameterization=Parameterization()):
-        x = Symbol('x')
-        curve_parameterization = Parameterization({Symbol(csg_curve_naming(
-            0)): (0, 1)})
+        # make sympy symbols to use
+        x = Symbol("x")
+
+        # curves for each side
+        curve_parameterization = Parameterization({Symbol(csg_curve_naming(0)): (0, 1)})
         curve_parameterization = Parameterization.combine(
-            curve_parameterization, parameterization)
-        pt1 = SympyCurve(functions={'x': point_1, 'normal_x': -1}, area=1.0,
-            parameterization=curve_parameterization)
-        pt2 = SympyCurve(functions={'x': point_2, 'normal_x': 1}, area=1.0,
-            parameterization=curve_parameterization)
+            curve_parameterization, parameterization
+        )
+        pt1 = SympyCurve(
+            functions={"x": point_1, "normal_x": -1},
+            area=1.0,
+            parameterization=curve_parameterization,
+        )
+        pt2 = SympyCurve(
+            functions={"x": point_2, "normal_x": 1},
+            area=1.0,
+            parameterization=curve_parameterization,
+        )
         curves = [pt1, pt2]
+
+        # calculate SDF
         dist = point_2 - point_1
         center_x = point_1 + dist / 2
         sdf = dist / 2 - Abs(x - center_x)
-        bounds = Bounds({Parameter('x'): (point_1, point_2)},
-            parameterization=parameterization)
-        super().__init__(curves, _sympy_sdf_to_sdf(sdf), dims=1, bounds=
-            bounds, parameterization=parameterization)
+
+        # calculate bounds
+        bounds = Bounds(
+            {Parameter("x"): (point_1, point_2)}, parameterization=parameterization
+        )
+
+        # initialize
+        super().__init__(
+            curves,
+            _sympy_sdf_to_sdf(sdf),
+            dims=1,
+            bounds=bounds,
+            parameterization=parameterization,
+        )

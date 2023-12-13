@@ -1,14 +1,24 @@
-from __future__ import annotations
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-import sys
-sys.path.append(
-    '/workspace/hesensen/paper_reprod/PaConvert/paddle_project_hss/utils')
-import paddle_aux
 import paddle
+import paddle.nn as nn
+from paddle import Tensor
 import numpy as np
 import logging
-import functorch
 import ast
+
 from termcolor import colored
 from inspect import signature, _empty
 from typing import Optional, Callable, List, Dict, Union, Tuple
@@ -19,48 +29,73 @@ from modulus.sym.constants import JIT_PYTORCH_VERSION
 from modulus.sym.distributed import DistributedManager
 from modulus.sym.manager import JitManager, JitArchMode
 from modulus.sym.models.layers import Activation
+
 logger = logging.getLogger(__name__)
 
 
-class Arch(paddle.nn.Layer):
+class Arch(nn.Layer):
     """
     Base class for all neural networks
     """
 
-    def __init__(self, input_keys: List[Key], output_keys: List[Key],
-        detach_keys: List[Key]=[], periodicity: Union[Dict[str, Tuple[float,
-        float]], None]=None):
+    def __init__(
+        self,
+        input_keys: List[Key],
+        output_keys: List[Key],
+        detach_keys: List[Key] = [],
+        periodicity: Union[Dict[str, Tuple[float, float]], None] = None,
+    ):
         super().__init__()
         self.input_keys = input_keys
         self.output_keys = output_keys
+
         self.periodicity = periodicity
         self.saveable = True
+
         self.input_key_dict = {str(var): var.size for var in input_keys}
         self.output_key_dict = {str(var): var.size for var in output_keys}
+
+        # input and output scales
         input_scales = {str(k): k.scale for k in input_keys}
         output_scales = {str(k): k.scale for k in output_keys}
-        self.input_scales = None if all([(s == NO_OP_SCALE) for s in
-            input_scales.values()]) else input_scales
-        self.output_scales = None if all([(s == NO_OP_SCALE) for s in
-            output_scales.values()]) else output_scales
-        self.register_buffer(name='input_scales_tensor', tensor=self.
-            _get_scalers_tensor(self.input_key_dict, self.input_scales),
-            persistable=False)
-        self.register_buffer(name='output_scales_tensor', tensor=self.
-            _get_scalers_tensor(self.output_key_dict, self.output_scales),
-            persistable=False)
+        self.input_scales = (
+            None
+            if all([s == NO_OP_SCALE for s in input_scales.values()])
+            else input_scales
+        )
+        self.output_scales = (
+            None
+            if all([s == NO_OP_SCALE for s in output_scales.values()])
+            else output_scales
+        )
+        # Register scales tensors as buffers.
+        # Buffer is allowed to be None, in this case it is a no-op in process_input function.
+        self.register_buffer(
+            "input_scales_tensor",
+            self._get_scalers_tensor(self.input_key_dict, self.input_scales),
+            persistable=False,
+        )
+        self.register_buffer(
+            "output_scales_tensor",
+            self._get_scalers_tensor(self.output_key_dict, self.output_scales),
+            persistable=False,
+        )
+
         self.detach_keys = detach_keys
-        self.detach_key_dict: Dict[str, int] = {str(var): var.size for var in
-            detach_keys}
+        self.detach_key_dict: Dict[str, int] = {
+            str(var): var.size for var in detach_keys
+        }
+
         self.var_dim = -1
+
+        # If no detach keys, add a dummy for TorchScript compilation
         if not self.detach_key_dict:
-            dummy_str = '_'
+            dummy_str = "_"
             while dummy_str in self.input_key_dict:
-                dummy_str += '_'
+                dummy_str += "_"
             self.detach_key_dict[dummy_str] = 0
 
-    def make_node(self, name: str, jit: Optional[bool]=None, optimize: bool
-        =True):
+    def make_node(self, name: str, jit: Optional[bool] = None, optimize: bool = True):
         """Makes neural network node for unrolling with Modulus `Graph`.
 
         Parameters
@@ -92,58 +127,95 @@ class Arch(paddle.nn.Layer):
 
         """
         manager = DistributedManager()
-        model_parallel_rank = manager.group_rank('model_parallel'
-            ) if manager.distributed else 0
+        model_parallel_rank = (
+            manager.group_rank("model_parallel") if manager.distributed else 0
+        )
+
+        # set name for loading and saving model
         self.name = name
-        self.checkpoint_filename = name + f'.{model_parallel_rank}.pth'
+        # set checkpoint filename for model
+        # append model parallel rank since each process in the first model
+        # parallel group will save a separate checkpoint
+        self.checkpoint_filename = name + f".{model_parallel_rank}.pth"
+
         if jit:
+            raise NotImplementedError("jit is not supported in paddle backend now")
             logger.warning(
-                'Passing jit=true when constructing Arch Node is deprecated, please remove it as JITManager could automatically handel it.'
-                )
+                "Passing jit=true when constructing Arch Node is deprecated, "
+                "please remove it as JITManager could automatically handel it."
+            )
         elif jit is None:
-            jit = JitManager().enabled and JitManager(
-                ).arch_mode == JitArchMode.ALL
+            jit = JitManager().enabled and JitManager().arch_mode == JitArchMode.ALL
+
+        # compile network
         if jit:
+            # Warn user if pytorch version difference
+            raise NotImplementedError(
+                "jit is not supported in paddle backend now, please set 'jit: False' "
+                "in config yaml."
+            )
             if not paddle.__version__ == JIT_PYTORCH_VERSION:
                 logger.warning(
-                    f'Installed PyTorch version {paddle.__version__} is not TorchScript'
-                     +
-                    f' supported in Modulus. Version {JIT_PYTORCH_VERSION} is officially supported.'
-                    )
+                    f"Installed Paddle version {paddle.__version__} is not TorchScript"
+                    + f" supported in Modulus. Version {JIT_PYTORCH_VERSION} is officially supported."
+                )
+
             arch = paddle.jit.script(self)
-            node_name = 'Arch Node (jit): ' + ('' if name is None else str(
-                name))
-            logger.info('Jit compiling network arch')
+            node_name = "Arch Node (jit): " + ("" if name is None else str(name))
+            logger.info("Jit compiling network arch")
         else:
             arch = self
-            node_name = 'Arch Node: ' + ('' if name is None else str(name))
+            node_name = "Arch Node: " + ("" if name is None else str(name))
+
+        # Set save and load methods TODO this is hacky but required for jit
         arch.save = self.save
         arch.load = self.load
-        net_node = Node(self.input_keys, self.output_keys, arch, name=
-            node_name, optimize=optimize)
+
+        # Create and return node from this network architecture
+        net_node = Node(
+            self.input_keys, self.output_keys, arch, name=node_name, optimize=optimize
+        )
         return net_node
 
-    def save(self, directory):
-        paddle.save(obj=self.state_dict(), path=directory + '/' + self.
-            checkpoint_filename)
+    def save(self, directory, step=None):
+        paddle.save(self.state_dict(), directory + "/" + self.checkpoint_filename)
 
     def load(self, directory, map_location=None):
-        self.set_state_dict(state_dict=paddle.load(path=directory + '/' +
-            self.checkpoint_filename))
+        # state_dict =paddle.load(directory + "/" + self.checkpoint_filename)
+        # dtype = paddle.get_default_dtype()
+        # cvt_dtype = False
+        # for k, v in state_dict.items():
+        #     if v.dtype == paddle.float32 and paddle.get_default_dtype() != "float32":
+        #         state_dict[k] = v.astype(dtype)
+        #         cvt_dtype = True
+        # if cvt_dtype:
+        #     print(f"==>> Convert dtype from {v.dtype} to {paddle.get_default_dtype()}")
+        self.set_state_dict(paddle.load(directory + "/" + self.checkpoint_filename))
 
-    def set_scaling(self, var_name: str, shift: float=0, scale: float=1):
+    def set_scaling(
+        self,
+        var_name: str,
+        shift: float = 0,
+        scale: float = 1,
+    ):
         if var_name in self.input_key_dict:
-            self.input_scales[var_name] = shift, scale
+            self.input_scales[var_name] = (shift, scale)
+
         if var_name in self.output_key_dict:
-            self.output_scales[var_name] = shift, scale
-        self.input_scales_tensor = self._get_scalers_tensor(self.
-            input_key_dict, self.input_scales)
-        self.output_scales_tensor = self._get_scalers_tensor(self.
-            output_key_dict, self.output_scales)
+            self.output_scales[var_name] = (shift, scale)
+
+        self.input_scales_tensor = self._get_scalers_tensor(
+            self.input_key_dict, self.input_scales
+        )
+        self.output_scales_tensor = self._get_scalers_tensor(
+            self.output_key_dict, self.output_scales
+        )
 
     @staticmethod
-    def _get_scalers_tensor(key_size_dict: Dict[str, int], key_scales:
-        Union[Dict[str, Tuple[float, float]], None]=None) ->paddle.Tensor:
+    def _get_scalers_tensor(
+        key_size_dict: Dict[str, int],
+        key_scales: Union[Dict[str, Tuple[float, float]], None] = None,
+    ) -> Tensor:
         if key_scales is None:
             return None
         scalers_tensor = [[], []]
@@ -151,36 +223,47 @@ class Arch(paddle.nn.Layer):
             for _ in range(size):
                 scalers_tensor[0].append(key_scales[key][0])
                 scalers_tensor[1].append(key_scales[key][1])
-        return paddle.to_tensor(data=scalers_tensor)
+
+        return paddle.to_tensor(scalers_tensor)
 
     @staticmethod
-    def prepare_input(input_variables: Dict[str, paddle.Tensor], mask: List[str],
-        detach_dict: Dict[str, int], dim: int=0, input_scales: Union[Dict[
-        str, Tuple[float, float]], None]=None, periodicity: Union[Dict[str,
-        Tuple[float, float]], None]=None) ->paddle.Tensor:
+    def prepare_input(
+        input_variables: Dict[str, Tensor],
+        mask: List[str],
+        detach_dict: Dict[str, int],
+        dim: int = 0,
+        input_scales: Union[Dict[str, Tuple[float, float]], None] = None,
+        periodicity: Union[Dict[str, Tuple[float, float]], None] = None,
+    ) -> Tensor:
         output_tensor = []
         for key in mask:
             if key in detach_dict:
                 x = input_variables[key].detach()
             else:
                 x = input_variables[key]
+            # Scale input data
             if input_scales is not None:
                 x = (x - input_scales[key][0]) / input_scales[key][1]
+
             append_tensor = [x]
             if periodicity is not None:
                 if key in list(periodicity.keys()):
-                    scaled_input = (x - periodicity[key][0]) / (periodicity
-                        [key][1] - periodicity[key][0])
-                    sin_tensor = paddle.sin(x=2.0 * np.pi * scaled_input)
-                    cos_tensor = paddle.cos(x=2.0 * np.pi * scaled_input)
+                    scaled_input = (x - periodicity[key][0]) / (
+                        periodicity[key][1] - periodicity[key][0]
+                    )
+                    sin_tensor = paddle.sin(2.0 * np.pi * scaled_input)
+                    cos_tensor = paddle.cos(2.0 * np.pi * scaled_input)
                     append_tensor = [sin_tensor, cos_tensor]
             output_tensor += append_tensor
-        return paddle.concat(x=output_tensor, axis=dim)
+        return paddle.concat(output_tensor, axis=dim)
 
     @staticmethod
-    def concat_input(input_variables: Dict[str, paddle.Tensor], mask: List[str],
-        detach_dict: Union[Dict[str, int], None]=None, dim: int=-1
-        ) ->paddle.Tensor:
+    def concat_input(
+        input_variables: Dict[str, Tensor],
+        mask: List[str],
+        detach_dict: Union[Dict[str, int], None] = None,
+        dim: int = -1,
+    ) -> Tensor:
         output_tensor = []
         for key in mask:
             if detach_dict is not None and key in detach_dict:
@@ -188,16 +271,20 @@ class Arch(paddle.nn.Layer):
             else:
                 x = input_variables[key]
             output_tensor += [x]
-        return paddle.concat(x=output_tensor, axis=dim)
+        return paddle.concat(output_tensor, axis=dim)
 
     @staticmethod
-    def process_input(input_tensor: paddle.Tensor, input_scales_tensor:
-        Union[paddle.Tensor, None]=None, periodicity: Union[Dict[str, Tuple[float,
-        float]], None]=None, input_dict: Union[Dict[str, int], None]=None,
-        dim: int=-1) ->paddle.Tensor:
+    def process_input(
+        input_tensor: Tensor,
+        input_scales_tensor: Union[Tensor, None] = None,
+        periodicity: Union[Dict[str, Tuple[float, float]], None] = None,
+        input_dict: Union[Dict[str, int], None] = None,
+        dim: int = -1,
+    ) -> Tensor:
         if input_scales_tensor is not None:
-            input_tensor = (input_tensor - input_scales_tensor[0]
-                ) / input_scales_tensor[1]
+            input_tensor = (
+                input_tensor - input_scales_tensor[0]
+            ) / input_scales_tensor[1]
         if periodicity is not None:
             assert input_dict is not None
             inputs = input_tensor.split(list(input_dict.values()), dim=dim)
@@ -205,18 +292,21 @@ class Arch(paddle.nn.Layer):
             for i, key in enumerate(input_dict.keys()):
                 if key in list(periodicity.keys()):
                     scaled_input = (inputs[i] - periodicity[key][0]) / (
-                        periodicity[key][1] - periodicity[key][0])
-                    sin_tensor = paddle.sin(x=2.0 * np.pi * scaled_input)
-                    cos_tensor = paddle.cos(x=2.0 * np.pi * scaled_input)
+                        periodicity[key][1] - periodicity[key][0]
+                    )
+                    sin_tensor = paddle.sin(2.0 * np.pi * scaled_input)
+                    cos_tensor = paddle.cos(2.0 * np.pi * scaled_input)
                     outputs += [sin_tensor, cos_tensor]
                 else:
                     outputs += [inputs[i]]
-            input_tensor = paddle.concat(x=outputs, axis=dim)
+            input_tensor = paddle.concat(outputs, axis=dim)
         return input_tensor
 
     @staticmethod
-    def prepare_slice_index(input_dict: Dict[str, int], slice_keys: List[str]
-        ) ->paddle.Tensor:
+    def prepare_slice_index(
+        input_dict: Dict[str, int],
+        slice_keys: List[str],
+    ) -> Tensor:
         """
         Used in fourier-like architectures.
 
@@ -235,20 +325,38 @@ class Arch(paddle.nn.Layer):
         slice_index = []
         for key in slice_keys:
             slice_index += index_dict[key]
-        return paddle.to_tensor(data=slice_index)
+        return paddle.to_tensor(slice_index)
 
     @staticmethod
-    def slice_input(input_tensor: paddle.Tensor, slice_index: paddle.Tensor,
-        dim: int=-1) ->paddle.Tensor:
+    def slice_input(
+        input_tensor: Tensor,
+        slice_index: Tensor,
+        dim: int = -1,
+    ) -> Tensor:
         """
         Used in fourier-like architectures.
         """
-        return input_tensor.index_select(axis=dim, index=slice_index)
+        channel = input_tensor.shape[-1]
+        right_mul_mat = paddle.zeros([channel, slice_index.size], input_tensor.dtype)
+        for col, keep_col in enumerate(slice_index.numpy()):
+            right_mul_mat[keep_col, col] = 1.0
+        right_mul_mat.stop_gradient = True
+        return paddle.matmul(input_tensor, right_mul_mat)
+        # if slice_index.max() >= input_tensor.shape[dim]:
+        #     raise ValueError(
+        #         f">>> slice_input: {input_tensor.shape} {slice_index.shape} {slice_index.min().item()} {slice_index.max().item()} dim={dim}"
+        #     )
+        # print(input_tensor.shape, slice_index.max().item())
+        # print("input_tensor.shape = ", input_tensor.shape)
+        # print("slice_index = ", slice_index.item())
+        # print("axis = ", input_tensor.ndim - 1)
+        # return paddle.gather(input_tensor, slice_index, axis=input_tensor.ndim - 1)
 
     @staticmethod
-    def _get_normalization_tensor(key_size_dict: Dict[str, int],
-        key_normalization: Union[Dict[str, Tuple[float, float]], None]=None
-        ) ->paddle.Tensor:
+    def _get_normalization_tensor(
+        key_size_dict: Dict[str, int],
+        key_normalization: Union[Dict[str, Tuple[float, float]], None] = None,
+    ) -> Tensor:
         """
         Used in siren and multiplicative_filter_net architectures.
         """
@@ -259,67 +367,76 @@ class Arch(paddle.nn.Layer):
             for _ in range(size):
                 normalization_tensor[0].append(key_normalization[key][0])
                 normalization_tensor[1].append(key_normalization[key][1])
-        return paddle.to_tensor(data=normalization_tensor)
+        return paddle.to_tensor(normalization_tensor)
 
     @staticmethod
-    def _tensor_normalize(x: paddle.Tensor, norm_tensor: paddle.Tensor
-        ) ->paddle.Tensor:
+    def _tensor_normalize(x: Tensor, norm_tensor: Tensor) -> Tensor:
         """
         Used in siren and multiplicative_filter_net architectures.
         """
         if norm_tensor is None:
             return x
+
         normalized_x = (x - norm_tensor[0]) / (norm_tensor[1] - norm_tensor[0])
         normalized_x = 2 * normalized_x - 1
         return normalized_x
 
     @staticmethod
-    def prepare_output(output_tensor: paddle.Tensor, output_var: Dict[str,
-        int], dim: int=0, output_scales: Union[Dict[str, Tuple[float, float
-        ]], None]=None) ->Dict[str, paddle.Tensor]:
+    def prepare_output(
+        output_tensor: Tensor,
+        output_var: Dict[str, int],
+        dim: int = 0,
+        output_scales: Union[Dict[str, Tuple[float, float]], None] = None,
+    ) -> Dict[str, Tensor]:
+
+        # create unnormalised output tensor
         output = {}
-        for k, v in zip(output_var, paddle.split(x=output_tensor,
-            num_or_sections=output_tensor.shape[dim] // list(output_var.
-            values()), axis=dim)):
+        for k, v in zip(
+            output_var,
+            paddle.split(output_tensor, list(output_var.values()), axis=dim),
+        ):
             output[k] = v
             if output_scales is not None:
-                output[k] = output[k] * output_scales[k][1] + output_scales[k][
-                    0]
+                output[k] = output[k] * output_scales[k][1] + output_scales[k][0]
+
         return output
 
     @staticmethod
-    def split_output(output_tensor: paddle.Tensor, output_dict: Dict[str,
-        int], dim: int=-1) ->Dict[str, paddle.Tensor]:
+    def split_output(
+        output_tensor: Tensor,
+        output_dict: Dict[str, int],
+        dim: int = -1,
+    ) -> Dict[str, Tensor]:
         output = {}
         for k, v in zip(
             output_dict,
-            paddle.split(
-                x=output_tensor,
-                num_or_sections=output_tensor.shape[dim] // len(output_dict),
-                axis=dim
-            )
+            paddle.split(output_tensor, list(output_dict.values()), axis=dim),
         ):
             output[k] = v
         return output
 
     @staticmethod
-    def process_output(output_tensor: paddle.Tensor, output_scales_tensor:
-        Union[paddle.Tensor, None]=None) ->paddle.Tensor:
+    def process_output(
+        output_tensor: Tensor,
+        output_scales_tensor: Union[Tensor, None] = None,
+    ) -> Tensor:
         if output_scales_tensor is not None:
-            output_tensor = output_tensor * output_scales_tensor[1
-                ] + output_scales_tensor[0]
+            output_tensor = (
+                output_tensor * output_scales_tensor[1] + output_scales_tensor[0]
+            )
         return output_tensor
 
-    def _tensor_forward(self, x: paddle.Tensor) ->None:
-        """
+    def _tensor_forward(self, x: Tensor) -> None:
+        r"""
         This method defines the computation performed with an input tensor
         concatenated from the input dictionary. All subclasses need to
         override this method to be able to use FuncArch.
         """
         raise NotImplementedError
 
-    def _find_computable_deriv_with_func_arch(self, needed_names: List[Key],
-        allow_partial_hessian):
+    def _find_computable_deriv_with_func_arch(
+        self, needed_names: List[Key], allow_partial_hessian
+    ):
         """
         Given a list of names, find a list of derivatives that could be computed
         by using the FuncArch API.
@@ -331,9 +448,11 @@ class Arch(paddle.nn.Layer):
             derivatives are `[u__x, p__x, u__x__x]`, when this flag is on, FuncArch
             will only evaluate [u__x, u__x__x].
         """
-        compute_derivs = {(1): [], (2): []}
+        compute_derivs = {1: [], 2: []}
+        # collect all computable derivatives
         for n in needed_names:
             computable = True
+            # check the derivative is computable
             order = len(n.derivatives)
             if 0 < order < 3 and Key(n.name) in self.output_keys:
                 for deriv in n.derivatives:
@@ -341,15 +460,17 @@ class Arch(paddle.nn.Layer):
                         computable = False
                 if computable:
                     compute_derivs[order].append(n)
+        # Filtering out the Jacobian terms that are not required for the Hessian terms,
+        # these Jacobian terms will get picked up by the regular autograd engine.
         if allow_partial_hessian and len(compute_derivs[2]):
             needed_hessian_name = set([d.name for d in compute_derivs[2]])
-            compute_derivs[1] = [d for d in compute_derivs[1] if d.name in
-                needed_hessian_name]
+            compute_derivs[1] = [
+                d for d in compute_derivs[1] if d.name in needed_hessian_name
+            ]
         return sorted(compute_derivs[1]) + sorted(compute_derivs[2])
 
     @property
-    # @torch.jit.unused
-    def supports_func_arch(self) ->bool:
+    def supports_func_arch(self) -> bool:
         """
         Returns whether the instantiate arch object support FuncArch API.
 
@@ -397,45 +518,62 @@ class Arch(paddle.nn.Layer):
         Refer to `Key.convert_config` for more details on how to define keys in the config.
         """
         model_params = signature(cls.__init__).parameters
-        if 'input_keys' in cfg:
-            cfg['input_keys'] = Key.convert_config(cfg['input_keys'])
-        if 'output_keys' in cfg:
-            cfg['output_keys'] = Key.convert_config(cfg['output_keys'])
-        if 'detach_keys' in cfg:
-            cfg['detach_keys'] = Key.convert_config(cfg['detach_keys'])
-        if 'activation_fn' in cfg and isinstance(cfg['activation_fn'], str):
-            cfg['activation_fn'] = Activation[cfg['activation_fn']]
+
+        # Init keys if config was used to define them (string)
+        if "input_keys" in cfg:
+            cfg["input_keys"] = Key.convert_config(cfg["input_keys"])
+        if "output_keys" in cfg:
+            cfg["output_keys"] = Key.convert_config(cfg["output_keys"])
+        if "detach_keys" in cfg:
+            cfg["detach_keys"] = Key.convert_config(cfg["detach_keys"])
+
+        # Activation functions
+        if "activation_fn" in cfg and isinstance(cfg["activation_fn"], str):
+            cfg["activation_fn"] = Activation[cfg["activation_fn"]]
+
         params = {}
         for key in model_params:
             parameter = model_params[key]
             if parameter.name in cfg:
                 if isinstance(cfg[parameter.name], str) and not isinstance(
-                    parameter.kind, str):
+                    parameter.kind, str
+                ):
                     try:
+                        # Try eval for python code that needs to run
+                        # Such as list compression
                         param_literal = ast.literal_eval(cfg[parameter.name])
                     except:
+                        # Fall back... hope a string works
                         param_literal = cfg[parameter.name]
                     params[parameter.name] = param_literal
                 else:
                     params[parameter.name] = cfg[parameter.name]
-            elif parameter.default is _empty and parameter.name != 'self':
-                logger.warning(colored(
-                    f"Positional argument '{parameter.name}' not provided. Consider manually adding it to instantiate_arch() call."
-                    , 'yellow'))
+            # If parameter is not in the config and has no default value
+            # Give a warning, because this will error
+            elif parameter.default is _empty and parameter.name != "self":
+                logger.warning(
+                    colored(
+                        f"Positional argument '{parameter.name}' not provided. Consider manually adding it to instantiate_arch() call.",
+                        "yellow",
+                    )
+                )
+
         model = cls(**params)
-        if 'scaling' in cfg and not cfg['scaling'] is None:
-            for scale_dict in cfg['scaling']:
+
+        # Set any variable scaling
+        if "scaling" in cfg and not cfg["scaling"] is None:
+            for scale_dict in cfg["scaling"]:
                 try:
                     name = next(iter(scale_dict))
                     shift, scale = scale_dict[name]
                     model.set_scaling(name, shift, scale)
                 except:
-                    logger.warning(
-                        f'Failed to set scaling with config {scale_dict}')
+                    logger.warning(f"Failed to set scaling with config {scale_dict}")
+
         return model, params
 
 
-class FuncArch(paddle.nn.Layer):
+class FuncArch(nn.Layer):
     """
     Base class for all neural networks using functorch functional API.
     FuncArch perform Jacobian and Hessian calculations during the forward pass.
@@ -451,55 +589,80 @@ class FuncArch(paddle.nn.Layer):
         `arch._tensor_forward` function.
     """
 
-    def __init__(self, arch: Arch, deriv_keys: List[Key], forward_func:
-        Optional[Callable]=None):
+    def __init__(
+        self, arch: Arch, deriv_keys: List[Key], forward_func: Optional[Callable] = None
+    ):
         super().__init__()
-        if 'torch.jit' in str(type(arch)):
+
+        if "torch.jit" in str(type(arch)):
             raise RuntimeError(
-                f'Found {type(arch)}, currently FuncArch does not work with jit.'
-                )
-        assert isinstance(arch, Arch
-            ), f'arch should be an instantiated Arch object, but found to be {type(arch)}.'
-        assert arch.supports_func_arch, f'{type(arch)} currently does not support FuncArch.'
+                f"Found {type(arch)}, currently FuncArch does not work with jit."
+            )
+        assert isinstance(
+            arch, Arch
+        ), f"arch should be an instantiated Arch object, but found to be {type(arch)}."
+        assert (
+            arch.supports_func_arch
+        ), f"{type(arch)} currently does not support FuncArch."
+
         if forward_func is None:
             forward_func = arch._tensor_forward
+
         self.saveable = True
         self.deriv_keys = deriv_keys
         self.arch = arch
+
         self.input_key_dim = self._get_key_dim(arch.input_keys)
         self.output_key_dim = self._get_key_dim(arch.output_keys)
-        self.deriv_key_dict, self.max_order = self._collect_derivs(arch.
-            input_key_dict, arch.output_key_dict, deriv_keys)
-        needed_output_keys = set([Key(d.name) for d in self.deriv_key_dict[
-            1] + self.deriv_key_dict[2]])
-        needed_output_keys = [key for key in arch.output_keys if key in
-            needed_output_keys]
-        self.needed_output_dims = paddle.to_tensor(data=[self.
-            output_key_dim[key.name] for key in needed_output_keys])
-        self.output_key_dim = {str(var): i for i, var in enumerate(
-            needed_output_keys)}
+        self.deriv_key_dict, self.max_order = self._collect_derivs(
+            arch.input_key_dict, arch.output_key_dict, deriv_keys
+        )
+        # may only need to evaluate the partial hessian or jacobian
+        needed_output_keys = set(
+            [Key(d.name) for d in self.deriv_key_dict[1] + self.deriv_key_dict[2]]
+        )
+        # keep the keys in the original order, so the mapped dims are correct
+        needed_output_keys = [
+            key for key in arch.output_keys if key in needed_output_keys
+        ]
+        # needed_output_dims is used to slice I_N to save some computation
+        self.needed_output_dims = paddle.to_tensor(
+            [self.output_key_dim[key.name] for key in needed_output_keys]
+        )
+        # if partial hessian or jacobian, the final output shape has changed and so the
+        # corresponding output key dim mapping
+        self.output_key_dim = {str(var): i for i, var in enumerate(needed_output_keys)}
+
         in_features = sum(arch.input_key_dict.values())
         out_features = sum(arch.output_key_dict.values())
+
         if self.max_order == 0:
             self._tensor_forward = forward_func
         elif self.max_order == 1:
-            I_N = paddle.eye(num_rows=out_features)[self.needed_output_dims]
-            self.register_buffer(name='I_N', tensor=I_N, persistable=False)
+            I_N = paddle.eye(out_features)[self.needed_output_dims]
+            self.register_buffer("I_N", I_N, persistable=False)
             self._tensor_forward = self._jacobian_impl(forward_func)
         elif self.max_order == 2:
-            I_N1 = paddle.eye(num_rows=out_features)[self.needed_output_dims]
-            I_N2 = paddle.eye(num_rows=in_features)
-            self.register_buffer(name='I_N1', tensor=I_N1, persistable=False)
-            self.register_buffer(name='I_N2', tensor=I_N2, persistable=False)
+            I_N1 = paddle.eye(out_features)[self.needed_output_dims]
+            I_N2 = paddle.eye(in_features)
+            self.register_buffer("I_N1", I_N1, persistable=False)
+            self.register_buffer("I_N2", I_N2, persistable=False)
             self._tensor_forward = self._hessian_impl(forward_func)
         else:
             raise ValueError(
-                f'FuncArch currently does not support {self.max_order}th order derivative'
-                )
+                "FuncArch currently does not support "
+                f"{self.max_order}th order derivative"
+            )
 
-    def forward(self, in_vars: Dict[str, paddle.Tensor]) ->Dict[str, paddle.Tensor]:
-        x = self.arch.concat_input(in_vars, self.arch.input_key_dict.keys(),
-            detach_dict=self.arch.detach_key_dict, dim=-1)
+    def forward(self, in_vars: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        raise NotImplementedError(f"Funcarch is not supported now.")
+        x = self.arch.concat_input(
+            in_vars,
+            self.arch.input_key_dict.keys(),
+            detach_dict=self.arch.detach_key_dict,
+            dim=-1,
+        )
+
         if self.max_order == 0:
             pred = self._tensor_forward(x)
             jacobian = None
@@ -511,18 +674,37 @@ class FuncArch(paddle.nn.Layer):
             pred, jacobian, hessian = self._tensor_forward(x)
         else:
             raise ValueError(
-                f'FuncArch currently does not support {self.max_order}th order derivative'
-                )
-        out = self.arch.split_output(pred, self.arch.output_key_dict, dim=-1)
+                "FuncArch currently does not support "
+                f"{self.max_order}th order derivative"
+            )
+
+        # prepare output, jacobian and hessian
+        out = self.arch.split_output(
+            pred,
+            self.arch.output_key_dict,
+            dim=-1,
+        )
         if jacobian is not None:
-            out.update(self.prepare_jacobian(jacobian, self.deriv_key_dict[
-                1], self.input_key_dim, self.output_key_dim))
+            out.update(
+                self.prepare_jacobian(
+                    jacobian,
+                    self.deriv_key_dict[1],
+                    self.input_key_dim,
+                    self.output_key_dim,
+                )
+            )
         if hessian is not None:
-            out.update(self.prepare_hessian(hessian, self.deriv_key_dict[2],
-                self.input_key_dim, self.output_key_dim))
+            out.update(
+                self.prepare_hessian(
+                    hessian,
+                    self.deriv_key_dict[2],
+                    self.input_key_dim,
+                    self.output_key_dim,
+                )
+            )
         return out
 
-    def make_node(self, name: str, jit: bool=False, optimize: bool=True):
+    def make_node(self, name: str, jit: bool = False, optimize: bool = True):
         """Makes functional arch node for unrolling with Modulus `Graph`.
 
         Parameters
@@ -534,15 +716,27 @@ class FuncArch(paddle.nn.Layer):
         optimize : bool
             If true then treat parameters as optimizable.
         """
+        # Forcing JIT off
         jit = False
+
+        # set name for loading and saving model
         self.name = name
-        self.checkpoint_filename = name + '.pth'
-        node_name = 'Functional ' + ('Arch' if name is None else str(name))
+        self.checkpoint_filename = name + ".pth"
+        node_name = "Functional " + ("Arch" if name is None else str(name))
         ft_arch = self
+
+        # Set save and load methods
         ft_arch.save = self.arch.save
         ft_arch.load = self.arch.load
-        net_node = Node(self.arch.input_keys, self.arch.output_keys + self.
-            deriv_keys, ft_arch, name=node_name, optimize=optimize)
+
+        # Create and return node from this network architecture
+        net_node = Node(
+            self.arch.input_keys,
+            self.arch.output_keys + self.deriv_keys,
+            ft_arch,
+            name=node_name,
+            optimize=optimize,
+        )
         return net_node
 
     @staticmethod
@@ -559,6 +753,7 @@ class FuncArch(paddle.nn.Layer):
 
         def exclusive_sum(sizes: List):
             return np.concatenate([[0], np.cumsum(sizes)])
+
         exclu_sum = exclusive_sum([k.size for k in keys])
         out = {}
         for i, k in enumerate(keys):
@@ -567,22 +762,27 @@ class FuncArch(paddle.nn.Layer):
         return out
 
     @staticmethod
-    def _collect_derivs(input_key_dict: Dict[str, int], output_key_dict:
-        Dict[str, int], deriv_keys: List[Key]):
-        deriv_key_dict = {(1): [], (2): []}
+    def _collect_derivs(
+        input_key_dict: Dict[str, int],
+        output_key_dict: Dict[str, int],
+        deriv_keys: List[Key],
+    ):
+        deriv_key_dict = {1: [], 2: []}
         for x in deriv_keys:
-            assert x.name in output_key_dict, f'Cannot calculate {x}'
-            assert output_key_dict[x.name
-                ] == 1, f'key ({x.name}) size must be 1'
+            # check the derivative is computable
+            assert x.name in output_key_dict, f"Cannot calculate {x}"
+            assert output_key_dict[x.name] == 1, f"key ({x.name}) size must be 1"
             for deriv in x.derivatives:
-                assert deriv.name in input_key_dict, f'Cannot calculate {x}'
-                assert input_key_dict[deriv.name
-                    ] == 1, f'key ({deriv.name}) size must be 1'
+                assert deriv.name in input_key_dict, f"Cannot calculate {x}"
+                assert (
+                    input_key_dict[deriv.name] == 1
+                ), f"key ({deriv.name}) size must be 1"
+            # collect each order derivatives
             order = len(x.derivatives)
             if order == 0 or order >= 3:
                 raise ValueError(
-                    f'FuncArch currently does not support {order}th order derivative'
-                    )
+                    "FuncArch currently does not support " f"{order}th order derivative"
+                )
             else:
                 deriv_key_dict[order].append(x)
         max_order = 0
@@ -591,64 +791,43 @@ class FuncArch(paddle.nn.Layer):
                 max_order = order
         return deriv_key_dict, max_order
 
-    def _jacobian_impl(self, forward_func):
-
-        def jacobian_func(x, v):
-            pred, vjpfunc = functorch.vjp(forward_func, x)
-            return vjpfunc(v)[0], pred
-
-        def get_jacobian(x):
-            I_N = self.I_N
-            jacobian, pred = functorch.vmap(functorch.vmap(jacobian_func,
-                in_dims=(None, 0)), in_dims=(0, None))(x, I_N)
-            pred = pred[:, 0, :]
-            return pred, jacobian
-        return get_jacobian
+    def _jacobian_impl(self, forward_func: Callable[[Tensor], Tensor]):
+        raise NotImplementedError(
+            "_jacobian_impl is not implemented for this architecture"
+        )
 
     def _hessian_impl(self, forward_func):
-
-        def hessian_func(x, v1, v2):
-
-            def jacobian_func(x):
-                pred, vjpfunc = functorch.vjp(forward_func, x)
-                return vjpfunc(v1)[0], pred
-            jacobian, hessian, pred = functorch.jvp(jacobian_func, (x,), (
-                v2,), has_aux=True)
-            return hessian, jacobian, pred
-
-        def get_hessian(x):
-            I_N1 = self.I_N1
-            I_N2 = self.I_N2
-            hessian, jacobian, pred = functorch.vmap(functorch.vmap(
-                functorch.vmap(hessian_func, in_dims=(None, None, 0)),
-                in_dims=(None, 0, None)), in_dims=(0, None, None))(x, I_N1,
-                I_N2)
-            pred = pred[:, 0, 0, :]
-            jacobian = jacobian[:, :, 0, :]
-            return pred, jacobian, hessian
-        return get_hessian
+        raise NotImplementedError(
+            "_hessian_impl is not implemented for this architecture"
+        )
 
     @staticmethod
-    def prepare_jacobian(output_tensor: paddle.Tensor, deriv_keys_1st_order:
-        List[Key], input_key_dim: Dict[str, int], output_key_dim: Dict[str,
-        int]) ->Dict[str, paddle.Tensor]:
+    def prepare_jacobian(
+        output_tensor: Tensor,
+        deriv_keys_1st_order: List[Key],
+        input_key_dim: Dict[str, int],
+        output_key_dim: Dict[str, int],
+    ) -> Dict[str, Tensor]:
         output = {}
         for k in deriv_keys_1st_order:
             input_dim = input_key_dim[k.derivatives[0].name]
             out_dim = output_key_dim[k.name]
-            output[str(k)] = output_tensor[:, out_dim, input_dim].reshape(-1, 1
-                )
+            output[str(k)] = output_tensor[:, out_dim, input_dim].reshape(-1, 1)
         return output
 
     @staticmethod
-    def prepare_hessian(output_tensor: paddle.Tensor, deriv_keys_2nd_order:
-        List[Key], input_key_dim: Dict[str, int], output_key_dim: Dict[str,
-        int]) ->Dict[str, paddle.Tensor]:
+    def prepare_hessian(
+        output_tensor: Tensor,
+        deriv_keys_2nd_order: List[Key],
+        input_key_dim: Dict[str, int],
+        output_key_dim: Dict[str, int],
+    ) -> Dict[str, Tensor]:
         output = {}
         for k in deriv_keys_2nd_order:
             input_dim0 = input_key_dim[k.derivatives[0].name]
             input_dim1 = input_key_dim[k.derivatives[1].name]
             out_dim = output_key_dim[k.name]
-            output[str(k)] = output_tensor[:, out_dim, input_dim0, input_dim1
-                ].reshape(-1, 1)
+            output[str(k)] = output_tensor[:, out_dim, input_dim0, input_dim1].reshape(
+                -1, 1
+            )
         return output

@@ -1,11 +1,27 @@
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Primitives for 2D geometries
 see https://www.iquilezles.org/www/articles/distfunctions/distfunctions.html
 """
+
 import sys
 from operator import mul
 from sympy import Symbol, Abs, Max, Min, sqrt, sin, cos, acos, atan2, pi, Heaviside
 from functools import reduce
+
 pi = float(pi)
 from sympy.vector import CoordSys3D
 from .curve import SympyCurve
@@ -30,25 +46,51 @@ class Line(Geometry):
         Parameterization of geometry.
     """
 
-    def __init__(self, point_1, point_2, normal=1, parameterization=
-        Parameterization()):
-        assert point_1[0] == point_2[0], 'Points must have same x-coordinate'
+    def __init__(self, point_1, point_2, normal=1, parameterization=Parameterization()):
+        assert point_1[0] == point_2[0], "Points must have same x-coordinate"
+
+        # make sympy symbols to use
         l = Symbol(csg_curve_naming(0))
-        x = Symbol('x')
+        x = Symbol("x")
+
+        # curves for each side
         curve_parameterization = Parameterization({l: (0, 1)})
         curve_parameterization = Parameterization.combine(
-            curve_parameterization, parameterization)
+            curve_parameterization, parameterization
+        )
         dist_y = point_2[1] - point_1[1]
-        line_1 = SympyCurve(functions={'x': point_1[0], 'y': point_1[1] + l *
-            dist_y, 'normal_x': 1e-10 + normal, 'normal_y': 0},
-            parameterization=curve_parameterization, area=dist_y)
+        line_1 = SympyCurve(
+            functions={
+                "x": point_1[0],
+                "y": point_1[1] + l * dist_y,
+                "normal_x": 1e-10 + normal,  # TODO rm 1e-10
+                "normal_y": 0,
+            },
+            parameterization=curve_parameterization,
+            area=dist_y,
+        )
         curves = [line_1]
+
+        # calculate SDF
         sdf = normal * (point_1[0] - x)
-        bounds = Bounds({Parameter('x'): (point_1[0], point_2[0]),
-            Parameter('y'): (point_1[1], point_2[1])}, parameterization=
-            parameterization)
-        super().__init__(curves, _sympy_sdf_to_sdf(sdf), dims=2, bounds=
-            bounds, parameterization=parameterization)
+
+        # calculate bounds
+        bounds = Bounds(
+            {
+                Parameter("x"): (point_1[0], point_2[0]),
+                Parameter("y"): (point_1[1], point_2[1]),
+            },
+            parameterization=parameterization,
+        )
+
+        # initialize Line
+        super().__init__(
+            curves,
+            _sympy_sdf_to_sdf(sdf),
+            dims=2,
+            bounds=bounds,
+            parameterization=parameterization,
+        )
 
 
 class Channel2D(Geometry):
@@ -66,30 +108,63 @@ class Channel2D(Geometry):
     """
 
     def __init__(self, point_1, point_2, parameterization=Parameterization()):
+        # make sympy symbols to use
         l = Symbol(csg_curve_naming(0))
-        y = Symbol('y')
+        y = Symbol("y")
+
+        # curves for each side
         curve_parameterization = Parameterization({l: (0, 1)})
         curve_parameterization = Parameterization.combine(
-            curve_parameterization, parameterization)
+            curve_parameterization, parameterization
+        )
         dist_x = point_2[0] - point_1[0]
         dist_y = point_2[1] - point_1[1]
-        line_1 = SympyCurve(functions={'x': l * dist_x + point_1[0], 'y':
-            point_1[1], 'normal_x': 0, 'normal_y': -1}, parameterization=
-            curve_parameterization, area=dist_x)
-        line_2 = SympyCurve(functions={'x': l * dist_x + point_1[0], 'y':
-            point_2[1], 'normal_x': 0, 'normal_y': 1}, parameterization=
-            curve_parameterization, area=dist_x)
+        line_1 = SympyCurve(
+            functions={
+                "x": l * dist_x + point_1[0],
+                "y": point_1[1],
+                "normal_x": 0,
+                "normal_y": -1,
+            },
+            parameterization=curve_parameterization,
+            area=dist_x,
+        )
+        line_2 = SympyCurve(
+            functions={
+                "x": l * dist_x + point_1[0],
+                "y": point_2[1],
+                "normal_x": 0,
+                "normal_y": 1,
+            },
+            parameterization=curve_parameterization,
+            area=dist_x,
+        )
         curves = [line_1, line_2]
-        center_y = point_1[1] + dist_y / 2
+
+        # calculate SDF
+        center_y = point_1[1] + (dist_y) / 2
         y_diff = Abs(y - center_y) - (point_2[1] - center_y)
         outside_distance = sqrt(Max(y_diff, 0) ** 2)
         inside_distance = Min(y_diff, 0)
         sdf = -(outside_distance + inside_distance)
-        bounds = Bounds({Parameter('x'): (point_1[0], point_2[0]),
-            Parameter('y'): (point_1[1], point_2[1])}, parameterization=
-            parameterization)
-        super().__init__(curves, _sympy_sdf_to_sdf(sdf), dims=2, bounds=
-            bounds, parameterization=parameterization)
+
+        # calculate bounds
+        bounds = Bounds(
+            {
+                Parameter("x"): (point_1[0], point_2[0]),
+                Parameter("y"): (point_1[1], point_2[1]),
+            },
+            parameterization=parameterization,
+        )
+
+        # initialize Channel2D
+        super().__init__(
+            curves,
+            _sympy_sdf_to_sdf(sdf),
+            dims=2,
+            bounds=bounds,
+            parameterization=parameterization,
+        )
 
 
 class Rectangle(Geometry):
@@ -107,38 +182,85 @@ class Rectangle(Geometry):
     """
 
     def __init__(self, point_1, point_2, parameterization=Parameterization()):
+        # make sympy symbols to use
         l = Symbol(csg_curve_naming(0))
-        x, y = Symbol('x'), Symbol('y')
+        x, y = Symbol("x"), Symbol("y")
+
+        # curves for each side
         curve_parameterization = Parameterization({l: (0, 1)})
         curve_parameterization = Parameterization.combine(
-            curve_parameterization, parameterization)
+            curve_parameterization, parameterization
+        )
         dist_x = point_2[0] - point_1[0]
         dist_y = point_2[1] - point_1[1]
-        line_1 = SympyCurve(functions={'x': l * dist_x + point_1[0], 'y':
-            point_1[1], 'normal_x': 0, 'normal_y': -1}, parameterization=
-            curve_parameterization, area=dist_x)
-        line_2 = SympyCurve(functions={'x': point_2[0], 'y': l * dist_y +
-            point_1[1], 'normal_x': 1, 'normal_y': 0}, parameterization=
-            curve_parameterization, area=dist_y)
-        line_3 = SympyCurve(functions={'x': l * dist_x + point_1[0], 'y':
-            point_2[1], 'normal_x': 0, 'normal_y': 1}, parameterization=
-            curve_parameterization, area=dist_x)
-        line_4 = SympyCurve(functions={'x': point_1[0], 'y': -l * dist_y +
-            point_2[1], 'normal_x': -1, 'normal_y': 0}, parameterization=
-            curve_parameterization, area=dist_y)
+        line_1 = SympyCurve(
+            functions={
+                "x": l * dist_x + point_1[0],
+                "y": point_1[1],
+                "normal_x": 0,
+                "normal_y": -1,
+            },
+            parameterization=curve_parameterization,
+            area=dist_x,
+        )
+        line_2 = SympyCurve(
+            functions={
+                "x": point_2[0],
+                "y": l * dist_y + point_1[1],
+                "normal_x": 1,
+                "normal_y": 0,
+            },
+            parameterization=curve_parameterization,
+            area=dist_y,
+        )
+        line_3 = SympyCurve(
+            functions={
+                "x": l * dist_x + point_1[0],
+                "y": point_2[1],
+                "normal_x": 0,
+                "normal_y": 1,
+            },
+            parameterization=curve_parameterization,
+            area=dist_x,
+        )
+        line_4 = SympyCurve(
+            functions={
+                "x": point_1[0],
+                "y": -l * dist_y + point_2[1],
+                "normal_x": -1,
+                "normal_y": 0,
+            },
+            parameterization=curve_parameterization,
+            area=dist_y,
+        )
         curves = [line_1, line_2, line_3, line_4]
-        center_x = point_1[0] + dist_x / 2
-        center_y = point_1[1] + dist_y / 2
+
+        # calculate SDF
+        center_x = point_1[0] + (dist_x) / 2
+        center_y = point_1[1] + (dist_y) / 2
         x_diff = Abs(x - center_x) - (point_2[0] - center_x)
         y_diff = Abs(y - center_y) - (point_2[1] - center_y)
         outside_distance = sqrt(Max(x_diff, 0) ** 2 + Max(y_diff, 0) ** 2)
         inside_distance = Min(Max(x_diff, y_diff), 0)
         sdf = -(outside_distance + inside_distance)
-        bounds = Bounds({Parameter('x'): (point_1[0], point_2[0]),
-            Parameter('y'): (point_1[1], point_2[1])}, parameterization=
-            parameterization)
-        super().__init__(curves, _sympy_sdf_to_sdf(sdf), dims=2, bounds=
-            bounds, parameterization=parameterization)
+
+        # calculate bounds
+        bounds = Bounds(
+            {
+                Parameter("x"): (point_1[0], point_2[0]),
+                Parameter("y"): (point_1[1], point_2[1]),
+            },
+            parameterization=parameterization,
+        )
+
+        # initialize Rectangle
+        super().__init__(
+            curves,
+            _sympy_sdf_to_sdf(sdf),
+            dims=2,
+            bounds=bounds,
+            parameterization=parameterization,
+        )
 
 
 class Circle(Geometry):
@@ -156,22 +278,47 @@ class Circle(Geometry):
     """
 
     def __init__(self, center, radius, parameterization=Parameterization()):
+        # make sympy symbols to use
         theta = Symbol(csg_curve_naming(0))
-        x, y = Symbol('x'), Symbol('y')
+        x, y = Symbol("x"), Symbol("y")
+
+        # curve for perimeter of the circle
         curve_parameterization = Parameterization({theta: (0, 2 * pi)})
         curve_parameterization = Parameterization.combine(
-            curve_parameterization, parameterization)
-        curve = SympyCurve(functions={'x': center[0] + radius * cos(theta),
-            'y': center[1] + radius * sin(theta), 'normal_x': 1 * cos(theta
-            ), 'normal_y': 1 * sin(theta)}, parameterization=
-            curve_parameterization, area=2 * pi * radius)
+            curve_parameterization, parameterization
+        )
+        curve = SympyCurve(
+            functions={
+                "x": center[0] + radius * cos(theta),
+                "y": center[1] + radius * sin(theta),
+                "normal_x": 1 * cos(theta),
+                "normal_y": 1 * sin(theta),
+            },
+            parameterization=curve_parameterization,
+            area=2 * pi * radius,
+        )
         curves = [curve]
+
+        # calculate SDF
         sdf = radius - sqrt((x - center[0]) ** 2 + (y - center[1]) ** 2)
-        bounds = Bounds({Parameter('x'): (center[0] - radius, center[0] +
-            radius), Parameter('y'): (center[1] - radius, center[1] +
-            radius)}, parameterization=parameterization)
-        super().__init__(curves, _sympy_sdf_to_sdf(sdf), dims=2, bounds=
-            bounds, parameterization=parameterization)
+
+        # calculate bounds
+        bounds = Bounds(
+            {
+                Parameter("x"): (center[0] - radius, center[0] + radius),
+                Parameter("y"): (center[1] - radius, center[1] + radius),
+            },
+            parameterization=parameterization,
+        )
+
+        # initialize Circle
+        super().__init__(
+            curves,
+            _sympy_sdf_to_sdf(sdf),
+            dims=2,
+            bounds=bounds,
+            parameterization=parameterization,
+        )
 
 
 class Triangle(Geometry):
@@ -191,11 +338,12 @@ class Triangle(Geometry):
         Parameterization of geometry.
     """
 
-    def __init__(self, center, base, height, parameterization=
-        Parameterization()):
-        x, y = Symbol('x'), Symbol('y')
+    def __init__(self, center, base, height, parameterization=Parameterization()):
+        # make sympy symbols to use
+        x, y = Symbol("x"), Symbol("y")
         t, h = Symbol(csg_curve_naming(0)), Symbol(csg_curve_naming(1))
-        N = CoordSys3D('N')
+
+        N = CoordSys3D("N")
         P = x * N.i + y * N.j
         O = center[0] * N.i + center[1] * N.j
         H = center[0] * N.i + (center[1] + height) * N.j
@@ -203,36 +351,71 @@ class Triangle(Geometry):
         OP = P - O
         OH = H - O
         PH = OH - OP
-        angle = acos(PH.dot(y=OH) / sqrt(PH.dot(y=PH)) / sqrt(OH.dot(y=OH)))
+        angle = acos(PH.dot(OH) / sqrt(PH.dot(PH)) / sqrt(OH.dot(OH)))
         apex_angle = atan2(base / 2, height)
-        hypo_sin = sqrt(height ** 2 + (base / 2) ** 2) * sin(apex_angle)
-        hypo_cos = sqrt(height ** 2 + (base / 2) ** 2) * cos(apex_angle)
-        dist = sqrt(PH.dot(y=PH)) * sin(Min(angle - apex_angle, pi / 2))
+        hypo_sin = sqrt(height**2 + (base / 2) ** 2) * sin(apex_angle)
+        hypo_cos = sqrt(height**2 + (base / 2) ** 2) * cos(apex_angle)
+        dist = sqrt(PH.dot(PH)) * sin(Min(angle - apex_angle, pi / 2))
+
+        # curve for each side
         curve_parameterization = Parameterization({t: (-1, 1), h: (0, 1)})
         curve_parameterization = Parameterization.combine(
-            curve_parameterization, parameterization)
-        curve_1 = SympyCurve(functions={'x': center[0] + t * base / 2, 'y':
-            center[1] + t * 0, 'normal_x': 0, 'normal_y': -1},
-            parameterization=curve_parameterization, area=base)
-        curve_2 = SympyCurve(functions={'x': center[0] + h * hypo_sin, 'y':
-            center[1] + height - h * hypo_cos, 'normal_x': 1 * cos(
-            apex_angle), 'normal_y': 1 * sin(apex_angle)}, parameterization
-            =curve_parameterization, area=sqrt(height ** 2 + (base / 2) ** 2))
-        curve_3 = SympyCurve(functions={'x': center[0] - h * hypo_sin, 'y':
-            center[1] + height - h * hypo_cos, 'normal_x': -1 * cos(
-            apex_angle), 'normal_y': 1 * sin(apex_angle)}, parameterization
-            =curve_parameterization, area=sqrt(height ** 2 + (base / 2) ** 2))
+            curve_parameterization, parameterization
+        )
+        curve_1 = SympyCurve(
+            functions={
+                "x": center[0] + t * base / 2,
+                "y": center[1] + t * 0,
+                "normal_x": 0,
+                "normal_y": -1,
+            },
+            parameterization=curve_parameterization,
+            area=base,
+        )
+        curve_2 = SympyCurve(
+            functions={
+                "x": center[0] + h * hypo_sin,
+                "y": center[1] + height - h * hypo_cos,
+                "normal_x": 1 * cos(apex_angle),
+                "normal_y": 1 * sin(apex_angle),
+            },
+            parameterization=curve_parameterization,
+            area=sqrt(height**2 + (base / 2) ** 2),
+        )
+        curve_3 = SympyCurve(
+            functions={
+                "x": center[0] - h * hypo_sin,
+                "y": center[1] + height - h * hypo_cos,
+                "normal_x": -1 * cos(apex_angle),
+                "normal_y": 1 * sin(apex_angle),
+            },
+            parameterization=curve_parameterization,
+            area=sqrt(height**2 + (base / 2) ** 2),
+        )
         curves = [curve_1, curve_2, curve_3]
-        outside_distance = 1 * sqrt(Max(0, dist) ** 2 + Max(0, center[1] -
-            y) ** 2)
-        inside_distance = -1 * Min(Abs(Min(0, dist)), Abs(Min(0, center[1] -
-            y)))
+
+        # calculate SDF
+        outside_distance = 1 * sqrt(Max(0, dist) ** 2 + Max(0, center[1] - y) ** 2)
+        inside_distance = -1 * Min(Abs(Min(0, dist)), Abs(Min(0, center[1] - y)))
         sdf = -(outside_distance + inside_distance)
-        bounds = Bounds({Parameter('x'): (center[0] - base / 2, center[0] +
-            base / 2), Parameter('y'): (center[1], center[1] + height)},
-            parameterization=parameterization)
-        super().__init__(curves, _sympy_sdf_to_sdf(sdf), dims=2, bounds=
-            bounds, parameterization=parameterization)
+
+        # calculate bounds
+        bounds = Bounds(
+            {
+                Parameter("x"): (center[0] - base / 2, center[0] + base / 2),
+                Parameter("y"): (center[1], center[1] + height),
+            },
+            parameterization=parameterization,
+        )
+
+        # initialize Triangle
+        super().__init__(
+            curves,
+            _sympy_sdf_to_sdf(sdf),
+            dims=2,
+            bounds=bounds,
+            parameterization=parameterization,
+        )
 
 
 class Ellipse(Geometry):
@@ -249,32 +432,56 @@ class Ellipse(Geometry):
         Parameterization of geometry.
     """
 
-    def __init__(self, center, major, minor, parameterization=
-        Parameterization()):
+    def __init__(self, center, major, minor, parameterization=Parameterization()):
+        # make sympy symbols to use
         theta = Symbol(csg_curve_naming(0))
-        x, y = Symbol('x'), Symbol('y')
+        x, y = Symbol("x"), Symbol("y")
         mag = sqrt((minor * cos(theta)) ** 2 + (major * sin(theta)) ** 2)
-        area = pi * (3 * (major + minor) - sqrt((3 * minor + major) * (3 *
-            major + minor)))
+        area = pi * (
+            3 * (major + minor) - sqrt((3 * minor + major) * (3 * major + minor))
+        )
         try:
             area = float(area)
         except:
             pass
+
+        # curve for perimeter of the circle
         curve_parameterization = Parameterization({theta: (0, 2 * pi)})
         curve_parameterization = Parameterization.combine(
-            curve_parameterization, parameterization)
-        curve = SympyCurve(functions={'x': center[0] + major * cos(theta),
-            'y': center[1] + minor * sin(theta), 'normal_x': minor * cos(
-            theta) / mag, 'normal_y': major * sin(theta) / mag},
-            parameterization=curve_parameterization, area=area)
+            curve_parameterization, parameterization
+        )
+        curve = SympyCurve(
+            functions={
+                "x": center[0] + major * cos(theta),
+                "y": center[1] + minor * sin(theta),
+                "normal_x": minor * cos(theta) / mag,
+                "normal_y": major * sin(theta) / mag,
+            },
+            parameterization=curve_parameterization,
+            area=area,
+        )
         curves = [curve]
-        sdf = 1 - (((x - center[0]) / major) ** 2 + ((y - center[1]) /
-            minor) ** 2)
-        bounds = Bounds({Parameter('x'): (center[0] - major, center[0] +
-            major), Parameter('y'): (center[1] - minor, center[1] + minor)},
-            parameterization=parameterization)
-        super().__init__(curves, _sympy_sdf_to_sdf(sdf), dims=2, bounds=
-            bounds, parameterization=parameterization)
+
+        # calculate SDF
+        sdf = 1 - (((x - center[0]) / major) ** 2 + ((y - center[1]) / minor) ** 2)
+
+        # calculate bounds
+        bounds = Bounds(
+            {
+                Parameter("x"): (center[0] - major, center[0] + major),
+                Parameter("y"): (center[1] - minor, center[1] + minor),
+            },
+            parameterization=parameterization,
+        )
+
+        # initialize Ellipse
+        super().__init__(
+            curves,
+            _sympy_sdf_to_sdf(sdf),
+            dims=2,
+            bounds=bounds,
+            parameterization=parameterization,
+        )
 
 
 class Polygon(Geometry):
@@ -290,49 +497,73 @@ class Polygon(Geometry):
     """
 
     def __init__(self, points, parameterization=Parameterization()):
+        # make sympy symbols to use
         s = Symbol(csg_curve_naming(0))
-        x = Symbol('x')
-        y = Symbol('y')
+        x = Symbol("x")
+        y = Symbol("y")
+
+        # wrap points
         wrapted_points = points + [points[0]]
+
+        # curves for each side
         curve_parameterization = Parameterization({s: (0, 1)})
         curve_parameterization = Parameterization.combine(
-            curve_parameterization, parameterization)
+            curve_parameterization, parameterization
+        )
         curves = []
         for v1, v2 in zip(wrapted_points[:-1], wrapted_points[1:]):
+            # area
             dx = v2[0] - v1[0]
             dy = v2[1] - v1[1]
-            area = (dx ** 2 + dy ** 2) ** 0.5
+            area = (dx**2 + dy**2) ** 0.5
+
+            # generate normals
             normal_x = dy / area
             normal_y = -dx / area
-            line = SympyCurve(functions={'x': dx * s + v1[0], 'y': dy * s +
-                v1[1], 'normal_x': dy / area, 'normal_y': -dx / area},
-                parameterization=curve_parameterization, area=area)
+            line = SympyCurve(
+                functions={
+                    "x": dx * s + v1[0],
+                    "y": dy * s + v1[1],
+                    "normal_x": dy / area,
+                    "normal_y": -dx / area,
+                },
+                parameterization=curve_parameterization,
+                area=area,
+            )
             curves.append(line)
-        sdfs = [(x - wrapted_points[0][0]) ** 2 + (y - wrapted_points[0][1]
-            ) ** 2]
+
+        # calculate SDF
+        sdfs = [(x - wrapted_points[0][0]) ** 2 + (y - wrapted_points[0][1]) ** 2]
         conds = []
         for v1, v2 in zip(wrapted_points[:-1], wrapted_points[1:]):
+            # sdf calculation
             dx = v1[0] - v2[0]
             dy = v1[1] - v2[1]
             px = x - v2[0]
             py = y - v2[1]
-            d_dot_d = dx ** 2 + dy ** 2
+            d_dot_d = dx**2 + dy**2
             p_dot_d = px * dx + py * dy
             max_min = Max(Min(p_dot_d / d_dot_d, 1.0), 0.0)
             vx = px - dx * max_min
             vy = py - dy * max_min
-            sdf = vx ** 2 + vy ** 2
+            sdf = vx**2 + vy**2
             sdfs.append(sdf)
+
+            # winding calculation
             cond_1 = Heaviside(y - v2[1])
             cond_2 = Heaviside(v1[1] - y)
-            cond_3 = Heaviside(dx * py - dy * px)
+            cond_3 = Heaviside((dx * py) - (dy * px))
             all_cond = cond_1 * cond_2 * cond_3
             none_cond = (1.0 - cond_1) * (1.0 - cond_2) * (1.0 - cond_3)
             cond = 1.0 - 2.0 * Min(all_cond + none_cond, 1.0)
             conds.append(cond)
+
+        # set inside outside
         sdf = Min(*sdfs)
         cond = reduce(mul, conds)
         sdf = sqrt(sdf) * -cond
+
+        # calculate bounds
         min_x = Min(*[p[0] for p in points])
         if min_x.is_number:
             min_x = float(min_x)
@@ -345,7 +576,19 @@ class Polygon(Geometry):
         max_y = Max(*[p[1] for p in points])
         if max_y.is_number:
             max_y = float(max_y)
-        bounds = Bounds({Parameter('x'): (min_x, max_x), Parameter('y'): (
-            min_y, max_y)}, parameterization=parameterization)
-        super().__init__(curves, _sympy_sdf_to_sdf(sdf), dims=2, bounds=
-            bounds, parameterization=parameterization)
+        bounds = Bounds(
+            {
+                Parameter("x"): (min_x, max_x),
+                Parameter("y"): (min_y, max_y),
+            },
+            parameterization=parameterization,
+        )
+
+        # initialize Polygon
+        super().__init__(
+            curves,
+            _sympy_sdf_to_sdf(sdf),
+            dims=2,
+            bounds=bounds,
+            parameterization=parameterization,
+        )

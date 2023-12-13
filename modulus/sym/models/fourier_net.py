@@ -1,5 +1,21 @@
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import paddle
+from paddle import Tensor
 from typing import Dict, List, Tuple
+
 import modulus.sym.models.fully_connected as fully_connected
 import modulus.sym.models.layers as layers
 from modulus.sym.models.layers import Activation
@@ -94,93 +110,141 @@ class FourierNetArch(Arch):
     https://arxiv.org/abs/1906.01170.
     """
 
-    def __init__(self, input_keys: List[Key], output_keys: List[Key],
-        detach_keys: List[Key]=[], frequencies: Tuple=('axis', [i for i in
-        range(10)]), frequencies_params: Tuple=('axis', [i for i in range(
-        10)]), activation_fn: Activation=Activation.SILU, layer_size: int=
-        512, nr_layers: int=6, skip_connections: bool=False, weight_norm:
-        bool=True, adaptive_activations: bool=False) ->None:
-        super().__init__(input_keys=input_keys, output_keys=output_keys,
-            detach_keys=detach_keys)
+    def __init__(
+        self,
+        input_keys: List[Key],
+        output_keys: List[Key],
+        detach_keys: List[Key] = [],
+        frequencies: Tuple = ("axis", [i for i in range(10)]),
+        frequencies_params: Tuple = ("axis", [i for i in range(10)]),
+        activation_fn: Activation = Activation.SILU,
+        layer_size: int = 512,
+        nr_layers: int = 6,
+        skip_connections: bool = False,
+        weight_norm: bool = True,
+        adaptive_activations: bool = False,
+    ) -> None:
+        super().__init__(
+            input_keys=input_keys, output_keys=output_keys, detach_keys=detach_keys
+        )
+
         if frequencies_params is None:
             frequencies_params = frequencies
-        self.xyzt_var = [x for x in self.input_key_dict if x in ['x', 'y',
-            'z', 't']]
-        xyzt_slice_index = self.prepare_slice_index(self.input_key_dict,
-            self.xyzt_var)
-        self.register_buffer(name='xyzt_slice_index', tensor=
-            xyzt_slice_index, persistable=False)
-        self.params_var = [x for x in self.input_key_dict if x not in ['x',
-            'y', 'z', 't']]
-        params_slice_index = self.prepare_slice_index(self.input_key_dict,
-            self.params_var)
-        self.register_buffer(name='params_slice_index', tensor=
-            params_slice_index, persistable=False)
-        in_features_xyzt = sum(v for k, v in self.input_key_dict.items() if
-            k in self.xyzt_var)
-        in_features_params = sum(v for k, v in self.input_key_dict.items() if
-            k in self.params_var)
+
+        self.xyzt_var = [x for x in self.input_key_dict if x in ["x", "y", "z", "t"]]
+        # Prepare slice index
+        xyzt_slice_index = self.prepare_slice_index(self.input_key_dict, self.xyzt_var)
+        self.register_buffer("xyzt_slice_index", xyzt_slice_index, persistable=False)
+
+        self.params_var = [
+            x for x in self.input_key_dict if x not in ["x", "y", "z", "t"]
+        ]
+        params_slice_index = self.prepare_slice_index(
+            self.input_key_dict, self.params_var
+        )
+        self.register_buffer(
+            "params_slice_index", params_slice_index, persistable=False
+        )
+
+        in_features_xyzt = sum(
+            (v for k, v in self.input_key_dict.items() if k in self.xyzt_var)
+        )
+        in_features_params = sum(
+            (v for k, v in self.input_key_dict.items() if k in self.params_var)
+        )
         in_features = in_features_xyzt + in_features_params
         out_features = sum(self.output_key_dict.values())
+
         if in_features_xyzt > 0:
-            self.fourier_layer_xyzt = layers.FourierLayer(in_features=
-                in_features_xyzt, frequencies=frequencies)
+            self.fourier_layer_xyzt = layers.FourierLayer(
+                in_features=in_features_xyzt, frequencies=frequencies
+            )
             in_features += self.fourier_layer_xyzt.out_features()
         else:
             self.fourier_layer_xyzt = None
+
         if in_features_params > 0:
-            self.fourier_layer_params = layers.FourierLayer(in_features=
-                in_features_params, frequencies=frequencies_params)
+            self.fourier_layer_params = layers.FourierLayer(
+                in_features=in_features_params, frequencies=frequencies_params
+            )
             in_features += self.fourier_layer_params.out_features()
         else:
             self.fourier_layer_params = None
-        self.fc = fully_connected.FullyConnectedArchCore(in_features=
-            in_features, layer_size=layer_size, out_features=out_features,
-            nr_layers=nr_layers, skip_connections=skip_connections,
-            activation_fn=activation_fn, adaptive_activations=
-            adaptive_activations, weight_norm=weight_norm)
 
-    def _tensor_forward(self, x: paddle.Tensor) ->paddle.Tensor:
-        x = self.process_input(x, self.input_scales_tensor, input_dict=self
-            .input_key_dict, dim=-1)
+        self.fc = fully_connected.FullyConnectedArchCore(
+            in_features=in_features,
+            layer_size=layer_size,
+            out_features=out_features,
+            nr_layers=nr_layers,
+            skip_connections=skip_connections,
+            activation_fn=activation_fn,
+            adaptive_activations=adaptive_activations,
+            weight_norm=weight_norm,
+        )
+
+    def _tensor_forward(self, x: Tensor) -> Tensor:
+        x = self.process_input(
+            x, self.input_scales_tensor, input_dict=self.input_key_dict, dim=-1
+        )
         if self.fourier_layer_xyzt is not None:
             in_xyzt_var = self.slice_input(x, self.xyzt_slice_index, dim=-1)
             fourier_xyzt = self.fourier_layer_xyzt(in_xyzt_var)
-            x = paddle.concat(x=(x, fourier_xyzt), axis=-1)
+            x = paddle.concat((x, fourier_xyzt), axis=1)
+
         if self.fourier_layer_params is not None:
-            in_params_var = self.slice_input(x, self.params_slice_index, dim=-1
-                )
+            in_params_var = self.slice_input(x, self.params_slice_index, dim=-1)
             fourier_params = self.fourier_layer_params(in_params_var)
-            x = paddle.concat(x=(x, fourier_params), axis=-1)
+            x = paddle.concat((x, fourier_params), axis=1)
+
         x = self.fc(x)
         x = self.process_output(x, self.output_scales_tensor)
         return x
 
-    def forward(self, in_vars: Dict[str, Tensor]) ->Dict[str, Tensor]:
-        x = self.concat_input(in_vars, self.input_key_dict.keys(),
-            detach_dict=self.detach_key_dict, dim=-1)
+    def forward(self, in_vars: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        x = self.concat_input(
+            in_vars,
+            self.input_key_dict.keys(),
+            detach_dict=self.detach_key_dict,
+            dim=-1,
+        )
         y = self._tensor_forward(x)
         return self.split_output(y, self.output_key_dict, dim=-1)
 
-    def _dict_forward(self, in_vars: Dict[str, Tensor]) ->Dict[str, Tensor]:
+    def _dict_forward(self, in_vars: Dict[str, Tensor]) -> Dict[str, Tensor]:
         """
         This is the original forward function, left here for the correctness test.
         """
-        x = self.prepare_input(in_vars, self.input_key_dict.keys(),
-            detach_dict=self.detach_key_dict, dim=-1, input_scales=self.
-            input_scales)
+        x = self.prepare_input(
+            in_vars,
+            self.input_key_dict.keys(),
+            detach_dict=self.detach_key_dict,
+            dim=-1,
+            input_scales=self.input_scales,
+        )
+
         if self.fourier_layer_xyzt is not None:
-            in_xyzt_var = self.prepare_input(in_vars, self.xyzt_var,
-                detach_dict=self.detach_key_dict, dim=-1, input_scales=self
-                .input_scales)
+            in_xyzt_var = self.prepare_input(
+                in_vars,
+                self.xyzt_var,
+                detach_dict=self.detach_key_dict,
+                dim=-1,
+                input_scales=self.input_scales,
+            )
             fourier_xyzt = self.fourier_layer_xyzt(in_xyzt_var)
-            x = paddle.concat(x=(x, fourier_xyzt), axis=-1)
+            x = paddle.concat((x, fourier_xyzt), axis=1)
+
         if self.fourier_layer_params is not None:
-            in_params_var = self.prepare_input(in_vars, self.params_var,
-                detach_dict=self.detach_key_dict, dim=-1, input_scales=self
-                .input_scales)
+            in_params_var = self.prepare_input(
+                in_vars,
+                self.params_var,
+                detach_dict=self.detach_key_dict,
+                dim=-1,
+                input_scales=self.input_scales,
+            )
             fourier_params = self.fourier_layer_params(in_params_var)
-            x = paddle.concat(x=(x, fourier_params), axis=-1)
+            x = paddle.concat((x, fourier_params), axis=1)
+
         x = self.fc(x)
-        return self.prepare_output(x, self.output_key_dict, dim=-1,
-            output_scales=self.output_scales)
+        return self.prepare_output(
+            x, self.output_key_dict, dim=-1, output_scales=self.output_scales
+        )

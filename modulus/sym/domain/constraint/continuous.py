@@ -1,14 +1,27 @@
-import sys
-sys.path.append(
-    '/workspace/hesensen/paper_reprod/PaConvert/paddle_project_hss/utils')
-import paddle_aux
-import paddle
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
 """ Continuous type constraints
 """
+
 import numpy as np
 from typing import Dict, List, Union, Tuple, Callable
 import sympy as sp
 import logging
+import paddle
+
 from .constraint import Constraint
 from .utils import _compute_outvar, _compute_lambda_weighting
 from modulus.sym.utils.io.vtk import var_to_polyvtk
@@ -18,10 +31,20 @@ from modulus.sym.node import Node
 from modulus.sym.loss import Loss, PointwiseLossNorm, IntegralLossNorm
 from modulus.sym.distributed import DistributedManager
 from modulus.sym.utils.sympy import np_lambdify
+
 from modulus.sym.geometry import Geometry
 from modulus.sym.geometry.helper import _sympy_criteria_to_criteria
 from modulus.sym.geometry.parameterization import Parameterization, Bounds
-from modulus.sym.dataset import DictPointwiseDataset, ListIntegralDataset, ContinuousPointwiseIterableDataset, ContinuousIntegralIterableDataset, DictImportanceSampledPointwiseIterableDataset, DictVariationalDataset
+
+from modulus.sym.dataset import (
+    DictPointwiseDataset,
+    ListIntegralDataset,
+    ContinuousPointwiseIterableDataset,
+    ContinuousIntegralIterableDataset,
+    DictImportanceSampledPointwiseIterableDataset,
+    DictVariationalDataset,
+)
+
 Tensor = paddle.Tensor
 logger = logging.getLogger(__name__)
 
@@ -33,72 +56,104 @@ class PointwiseConstraint(Constraint):
 
     def save_batch(self, filename):
         invar, true_outvar, lambda_weighting = next(self.dataloader)
-        invar = Constraint._set_device(invar, device=self.place,
-            requires_grad=True)
+        invar = Constraint._set_device(invar, device=self.place, requires_grad=True)
         true_outvar = Constraint._set_device(true_outvar, device=self.place)
-        lambda_weighting = Constraint._set_device(lambda_weighting, device=
-            self.place)
-        if hasattr(self.model, 'module'):
+        lambda_weighting = Constraint._set_device(lambda_weighting, device=self.place)
+
+        # If using DDP, strip out collective stuff to prevent deadlocks
+        # This only works either when one process alone calls in to save_batch
+        # or when multiple processes independently save data
+        if hasattr(self.model, "module"):
             modl = self.model.module
         else:
             modl = self.model
+
+        # compute pred outvar
         pred_outvar = modl(invar)
-        named_lambda_weighting = {('lambda_' + key): value for key, value in
-            lambda_weighting.items()}
-        named_true_outvar = {('true_' + key): value for key, value in
-            true_outvar.items()}
-        named_pred_outvar = {('pred_' + key): value for key, value in
-            pred_outvar.items()}
-        save_var = {**{key: value for key, value in invar.items()}, **
-            named_true_outvar, **named_pred_outvar, **named_lambda_weighting}
-        save_var = {key: value.cpu().detach().numpy() for key, value in
-            save_var.items()}
+
+        # rename values and save batch to vtk file TODO clean this up after graph unroll stuff
+        named_lambda_weighting = {
+            "lambda_" + key: value for key, value in lambda_weighting.items()
+        }
+        named_true_outvar = {"true_" + key: value for key, value in true_outvar.items()}
+        named_pred_outvar = {"pred_" + key: value for key, value in pred_outvar.items()}
+        save_var = {
+            **{key: value for key, value in invar.items()},
+            **named_true_outvar,
+            **named_pred_outvar,
+            **named_lambda_weighting,
+        }
+        save_var = {
+            key: value.cpu().detach().numpy() for key, value in save_var.items()
+        }
         var_to_polyvtk(save_var, filename)
 
     def load_data(self):
+        # get train points from dataloader
         invar, true_outvar, lambda_weighting = next(self.dataloader)
-        self._input_vars = Constraint._set_device(invar, device=self.place,
-            requires_grad=True)
-        self._target_vars = Constraint._set_device(true_outvar, device=self
-            .place)
-        self._lambda_weighting = Constraint._set_device(lambda_weighting,
-            device=self.place)
+
+        self._input_vars = Constraint._set_device(
+            invar, device=self.place, requires_grad=True
+        )
+        self._target_vars = Constraint._set_device(true_outvar, device=self.place)
+        self._lambda_weighting = Constraint._set_device(
+            lambda_weighting, device=self.place
+        )
 
     def load_data_static(self):
         if self._input_vars is None:
+            # Default loading if vars not allocated
             self.load_data()
         else:
+            # get train points from dataloader
             invar, true_outvar, lambda_weighting = next(self.dataloader)
-            input_vars = Constraint._set_device(invar, device=self.place,
-                requires_grad=False)
-            target_vars = Constraint._set_device(true_outvar, device=self.place
-                )
-            lambda_weighting = Constraint._set_device(lambda_weighting,
-                device=self.place)
+            # Set grads to false here for inputs, static var has allocation already
+            input_vars = Constraint._set_device(
+                invar, device=self.place, requires_grad=False
+            )
+            target_vars = Constraint._set_device(true_outvar, device=self.place)
+            lambda_weighting = Constraint._set_device(
+                lambda_weighting, device=self.place
+            )
+
             for key in input_vars.keys():
                 self._input_vars[key].data.copy_(input_vars[key])
             for key in target_vars.keys():
                 paddle.assign(target_vars[key], output=self._target_vars[key])
             for key in lambda_weighting.keys():
-                paddle.assign(lambda_weighting[key], output=self.
-                    _lambda_weighting[key])
+                paddle.assign(lambda_weighting[key], output=self._lambda_weighting[key])
 
     def forward(self):
+        # compute pred outvar
         self._output_vars = self.model(self._input_vars)
 
-    def loss(self, step: int) ->Dict[str, paddle.Tensor]:
+    def loss(self, step: int) -> Dict[str, paddle.Tensor]:
         if self._output_vars is None:
-            logger.warn('Calling loss without forward call')
+            logger.warn("Calling loss without forward call")
             return {}
-        losses = self._loss(self._input_vars, self._output_vars, self.
-            _target_vars, self._lambda_weighting, step)
+        losses = self._loss(
+            self._input_vars,
+            self._output_vars,
+            self._target_vars,
+            self._lambda_weighting,
+            step,
+        )
+
         return losses
 
     @classmethod
-    def from_numpy(cls, nodes: List[Node], invar: Dict[str, np.ndarray],
-        outvar: Dict[str, np.ndarray], batch_size: int, lambda_weighting:
-        Dict[str, np.ndarray]=None, loss: Loss=PointwiseLossNorm(), shuffle:
-        bool=True, drop_last: bool=True, num_workers: int=0):
+    def from_numpy(
+        cls,
+        nodes: List[Node],
+        invar: Dict[str, np.ndarray],
+        outvar: Dict[str, np.ndarray],
+        batch_size: int,
+        lambda_weighting: Dict[str, np.ndarray] = None,
+        loss: Loss = PointwiseLossNorm(),
+        shuffle: bool = True,
+        drop_last: bool = True,
+        num_workers: int = 0,
+    ):
         """
         Create custom pointwise constraint from numpy arrays.
 
@@ -124,13 +179,28 @@ class PointwiseConstraint(Constraint):
         num_workers : int
             Number of worker used in fetching data.
         """
-        if 'area' not in invar:
-            invar['area'] = np.ones_like(next(iter(invar.values())))
-        dataset = DictPointwiseDataset(invar=invar, outvar=outvar,
-            lambda_weighting=lambda_weighting)
-        return cls(nodes=nodes, dataset=dataset, loss=loss, batch_size=
-            batch_size, shuffle=shuffle, drop_last=drop_last, num_workers=
-            num_workers)
+
+        if "area" not in invar:
+            invar["area"] = np.ones_like(next(iter(invar.values())))
+        # TODO: better area definition?
+        # no need to lambdify: outvar / lambda_weighting already contain np arrays
+
+        # make point dataset
+        dataset = DictPointwiseDataset(
+            invar=invar,
+            outvar=outvar,
+            lambda_weighting=lambda_weighting,
+        )
+
+        return cls(
+            nodes=nodes,
+            dataset=dataset,
+            loss=loss,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            drop_last=drop_last,
+            num_workers=num_workers,
+        )
 
 
 class PointwiseBoundaryConstraint(PointwiseConstraint):
@@ -188,44 +258,122 @@ class PointwiseBoundaryConstraint(PointwiseConstraint):
         Randomly shuffle examples in dataset every epoch, by default True
     """
 
-    def __init__(self, nodes: List[Node], geometry: Geometry, outvar: Dict[
-        str, Union[int, float, sp.Basic]], batch_size: int, criteria: Union
-        [sp.Basic, Callable, None]=None, lambda_weighting: Dict[str, Union[
-        int, float, sp.Basic]]=None, parameterization: Union[
-        Parameterization, None]=None, fixed_dataset: bool=True,
-        importance_measure: Union[Callable, None]=None, batch_per_epoch:
-        int=1000, quasirandom: bool=False, num_workers: int=0, loss: Loss=
-        PointwiseLossNorm(), shuffle: bool=True):
-        assert not (not fixed_dataset and importance_measure is not None
-            ), 'Using Importance measure with continuous dataset is not supported'
+    def __init__(
+        self,
+        nodes: List[Node],
+        geometry: Geometry,
+        outvar: Dict[str, Union[int, float, sp.Basic]],
+        batch_size: int,
+        criteria: Union[sp.Basic, Callable, None] = None,
+        lambda_weighting: Dict[str, Union[int, float, sp.Basic]] = None,
+        parameterization: Union[Parameterization, None] = None,
+        fixed_dataset: bool = True,
+        importance_measure: Union[Callable, None] = None,
+        batch_per_epoch: int = 1000,
+        quasirandom: bool = False,
+        num_workers: int = 0,
+        loss: Loss = PointwiseLossNorm(),
+        shuffle: bool = True,
+        name: str = "123",
+    ):
+
+        # assert that not using importance measure with continuous dataset
+        assert not (
+            not fixed_dataset and importance_measure is not None
+        ), "Using Importance measure with continuous dataset is not supported"
+
+        # if fixed dataset then sample points and fix for all of training
         if fixed_dataset:
-            invar = geometry.sample_boundary(batch_size * batch_per_epoch,
-                criteria=criteria, parameterization=parameterization,
-                quasirandom=quasirandom)
+            # sample boundary
+            invar = geometry.sample_boundary(
+                batch_size * batch_per_epoch,
+                criteria=criteria,
+                parameterization=parameterization,
+                quasirandom=quasirandom,
+            )
+
+            # compute outvar
             outvar = _compute_outvar(invar, outvar)
-            lambda_weighting = _compute_lambda_weighting(invar, outvar,
-                lambda_weighting)
+
+            # set lambda weighting
+            lambda_weighting = _compute_lambda_weighting(
+                invar, outvar, lambda_weighting
+            )
+
+            invar = np.load(
+                f"/workspace/hesensen/paper_reprod/modulus-sym/examples/turbulent_channel/2d_std_wf/outputs_re590_k_ep/re590_k_ep_old/{name}.invar.npz",
+                allow_pickle=True,
+            )
+            invar = dict(invar)
+            # invar = {k: v.astype(paddle.get_default_dtype()) for k, v in invar.items()}
+            outvar = np.load(
+                f"/workspace/hesensen/paper_reprod/modulus-sym/examples/turbulent_channel/2d_std_wf/outputs_re590_k_ep/re590_k_ep_old/{name}.outvar.npz",
+                allow_pickle=True,
+            )
+            outvar = dict(outvar)
+            # outvar = {k: v.astype(paddle.get_default_dtype()) for k, v in outvar.items()}
+            lambda_weighting = np.load(
+                f"/workspace/hesensen/paper_reprod/modulus-sym/examples/turbulent_channel/2d_std_wf/outputs_re590_k_ep/re590_k_ep_old/{name}.lambda_weighting.npz",
+                allow_pickle=True,
+            )
+            lambda_weighting = dict(lambda_weighting)
+            # lambda_weighting = {k: v.astype(paddle.get_default_dtype()) for k, v in lambda_weighting.items()}
+
             if importance_measure is None:
-                invar['area'] *= batch_per_epoch
-                dataset = DictPointwiseDataset(invar=invar, outvar=outvar,
-                    lambda_weighting=lambda_weighting)
+                invar["area"] *= batch_per_epoch  # TODO find better way to do this
+                dataset = DictPointwiseDataset(
+                    invar=invar,
+                    outvar=outvar,
+                    lambda_weighting=lambda_weighting,
+                )
             else:
-                dataset = DictImportanceSampledPointwiseIterableDataset(invar
-                    =invar, outvar=outvar, batch_size=batch_size,
-                    importance_measure=importance_measure, lambda_weighting
-                    =lambda_weighting, shuffle=shuffle)
+                dataset = DictImportanceSampledPointwiseIterableDataset(
+                    invar=invar,
+                    outvar=outvar,
+                    batch_size=batch_size,
+                    importance_measure=importance_measure,
+                    lambda_weighting=lambda_weighting,
+                    shuffle=shuffle,
+                )
+
+        # else sample points every batch
         else:
-            invar_fn = lambda : geometry.sample_boundary(batch_size,
-                criteria=criteria, parameterization=parameterization,
-                quasirandom=quasirandom)
+            # invar function
+            invar_fn = lambda: geometry.sample_boundary(
+                batch_size,
+                criteria=criteria,
+                parameterization=parameterization,
+                quasirandom=quasirandom,
+            )
+
+            # outvar function
             outvar_fn = lambda invar: _compute_outvar(invar, outvar)
-            lambda_weighting_fn = (lambda invar, outvar:
-                _compute_lambda_weighting(invar, outvar, lambda_weighting))
-            dataset = ContinuousPointwiseIterableDataset(invar_fn=invar_fn,
-                outvar_fn=outvar_fn, lambda_weighting_fn=lambda_weighting_fn)
-        super().__init__(nodes=nodes, dataset=dataset, loss=loss,
-            batch_size=batch_size, shuffle=shuffle, drop_last=True,
-            num_workers=num_workers)
+
+            # lambda weighting function
+            lambda_weighting_fn = lambda invar, outvar: _compute_lambda_weighting(
+                invar, outvar, lambda_weighting
+            )
+
+            # make point dataloader
+            dataset = ContinuousPointwiseIterableDataset(
+                invar_fn=invar_fn,
+                outvar_fn=outvar_fn,
+                lambda_weighting_fn=lambda_weighting_fn,
+            )
+        # np.savez(f"{name}.invar_pdsci", **invar)
+        # np.savez(f"{name}.outvar_pdsci", **outvar)
+        # np.savez(f"{name}.lambda_weighting_pdsci", **lambda_weighting)
+
+        # initialize constraint
+        super().__init__(
+            nodes=nodes,
+            dataset=dataset,
+            loss=loss,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            drop_last=True,
+            num_workers=num_workers,
+        )
 
 
 class PointwiseInteriorConstraint(PointwiseConstraint):
@@ -284,47 +432,153 @@ class PointwiseInteriorConstraint(PointwiseConstraint):
         Randomly shuffle examples in dataset every epoch, by default True
     """
 
-    def __init__(self, nodes: List[Node], geometry: Geometry, outvar: Dict[
-        str, Union[int, float, sp.Basic]], batch_size: int, bounds: Dict[sp
-        .Basic, Tuple[float, float]]=None, criteria: Union[sp.Basic,
-        Callable, None]=None, lambda_weighting: Dict[str, Union[int, float,
-        sp.Basic]]=None, parameterization: Union[Parameterization, None]=
-        None, fixed_dataset: bool=True, compute_sdf_derivatives: bool=False,
-        importance_measure: Union[Callable, None]=None, batch_per_epoch:
-        int=1000, quasirandom: bool=False, num_workers: int=0, loss: Loss=
-        PointwiseLossNorm(), shuffle: bool=True):
-        assert not (not fixed_dataset and importance_measure is not None
-            ), 'Using Importance measure with continuous dataset is not supported'
+    def __init__(
+        self,
+        nodes: List[Node],
+        geometry: Geometry,
+        outvar: Dict[str, Union[int, float, sp.Basic]],
+        batch_size: int,
+        bounds: Dict[sp.Basic, Tuple[float, float]] = None,
+        criteria: Union[sp.Basic, Callable, None] = None,
+        lambda_weighting: Dict[str, Union[int, float, sp.Basic]] = None,
+        parameterization: Union[Parameterization, None] = None,
+        fixed_dataset: bool = True,
+        compute_sdf_derivatives: bool = False,
+        importance_measure: Union[Callable, None] = None,
+        batch_per_epoch: int = 1000,
+        quasirandom: bool = False,
+        num_workers: int = 0,
+        loss: Loss = PointwiseLossNorm(),
+        shuffle: bool = True,
+        name: str = "123",
+    ):
+
+        # assert that not using importance measure with continuous dataset
+        assert not (
+            (not fixed_dataset) and (importance_measure is not None)
+        ), "Using Importance measure with continuous dataset is not supported"
+        # if fixed dataset then sample points and fix for all of training
         if fixed_dataset:
-            invar = geometry.sample_interior(batch_size * batch_per_epoch,
-                bounds=bounds, criteria=criteria, parameterization=
-                parameterization, quasirandom=quasirandom,
-                compute_sdf_derivatives=compute_sdf_derivatives)
+            # sample interior
+            invar = geometry.sample_interior(
+                batch_size * batch_per_epoch,
+                bounds=bounds,
+                criteria=criteria,
+                parameterization=parameterization,
+                quasirandom=quasirandom,
+                compute_sdf_derivatives=compute_sdf_derivatives,
+            )
+
+            # compute outvar
             outvar = _compute_outvar(invar, outvar)
-            lambda_weighting = _compute_lambda_weighting(invar, outvar,
-                lambda_weighting)
+
+            # set lambda weighting
+            lambda_weighting = _compute_lambda_weighting(
+                invar, outvar, lambda_weighting
+            )
+            invar = np.load(
+                f"/workspace/hesensen/paper_reprod/modulus-sym/examples/turbulent_channel/2d_std_wf/outputs_re590_k_ep/re590_k_ep_old/{name}.invar.npz",
+                allow_pickle=True,
+            )
+            invar = dict(invar)
+            invar = {k: v.astype(paddle.get_default_dtype()) for k, v in invar.items()}
+            outvar = np.load(
+                f"/workspace/hesensen/paper_reprod/modulus-sym/examples/turbulent_channel/2d_std_wf/outputs_re590_k_ep/re590_k_ep_old/{name}.outvar.npz",
+                allow_pickle=True,
+            )
+            outvar = dict(outvar)
+            outvar = {
+                k: v.astype(paddle.get_default_dtype()) for k, v in outvar.items()
+            }
+            lambda_weighting = np.load(
+                f"/workspace/hesensen/paper_reprod/modulus-sym/examples/turbulent_channel/2d_std_wf/outputs_re590_k_ep/re590_k_ep_old/{name}.lambda_weighting.npz",
+                allow_pickle=True,
+            )
+            lambda_weighting = dict(lambda_weighting)
+            lambda_weighting = {
+                k: v.astype(paddle.get_default_dtype())
+                for k, v in lambda_weighting.items()
+            }
+
+            # if "k_equation" in outvar:
+            #     # invar.pop("k_equation")
+            #     outvar.pop("k_equation")
+            #     lambda_weighting.pop("k_equation")
+            #     print("Remove k_equation")
+
+            # if "ep_equation" in outvar:
+            #     # invar.pop("ep_equation")
+            #     outvar.pop("ep_equation")
+            #     lambda_weighting.pop("ep_equation")
+            #     print("Remove ep_equation")
+
+            # if "momentum_x" in outvar:
+            #     outvar.pop("momentum_x")
+            #     lambda_weighting.pop("momentum_x")
+            #     print("Remove momentum_x")
+
+            # if "momentum_y" in outvar:
+            #     outvar.pop("momentum_y")
+            #     lambda_weighting.pop("momentum_y")
+            #     print("Remove momentum_y")
+
             if importance_measure is None:
-                invar['area'] *= batch_per_epoch
-                dataset = DictPointwiseDataset(invar=invar, outvar=outvar,
-                    lambda_weighting=lambda_weighting)
+                invar["area"] *= batch_per_epoch  # TODO find better way to do this
+                dataset = DictPointwiseDataset(
+                    invar=invar,
+                    outvar=outvar,
+                    lambda_weighting=lambda_weighting,
+                )
             else:
-                dataset = DictImportanceSampledPointwiseIterableDataset(invar
-                    =invar, outvar=outvar, batch_size=batch_size,
-                    importance_measure=importance_measure, lambda_weighting
-                    =lambda_weighting, shuffle=shuffle)
+                dataset = DictImportanceSampledPointwiseIterableDataset(
+                    invar=invar,
+                    outvar=outvar,
+                    batch_size=batch_size,
+                    importance_measure=importance_measure,
+                    lambda_weighting=lambda_weighting,
+                    shuffle=shuffle,
+                )
+
+        # else sample points every batch
         else:
-            invar_fn = lambda : geometry.sample_interior(batch_size, bounds
-                =bounds, criteria=criteria, parameterization=
-                parameterization, quasirandom=quasirandom,
-                compute_sdf_derivatives=compute_sdf_derivatives)
+            # invar function
+            invar_fn = lambda: geometry.sample_interior(
+                batch_size,
+                bounds=bounds,
+                criteria=criteria,
+                parameterization=parameterization,
+                quasirandom=quasirandom,
+                compute_sdf_derivatives=compute_sdf_derivatives,
+            )
+
+            # outvar function
             outvar_fn = lambda invar: _compute_outvar(invar, outvar)
-            lambda_weighting_fn = (lambda invar, outvar:
-                _compute_lambda_weighting(invar, outvar, lambda_weighting))
-            dataset = ContinuousPointwiseIterableDataset(invar_fn=invar_fn,
-                outvar_fn=outvar_fn, lambda_weighting_fn=lambda_weighting_fn)
-        super().__init__(nodes=nodes, dataset=dataset, loss=loss,
-            batch_size=batch_size, shuffle=shuffle, drop_last=True,
-            num_workers=num_workers)
+
+            # lambda weighting function
+            lambda_weighting_fn = lambda invar, outvar: _compute_lambda_weighting(
+                invar, outvar, lambda_weighting
+            )
+
+            # make point dataloader
+            dataset = ContinuousPointwiseIterableDataset(
+                invar_fn=invar_fn,
+                outvar_fn=outvar_fn,
+                lambda_weighting_fn=lambda_weighting_fn,
+            )
+        # np.savez(f"{name}.invar_pdsci", **invar)
+        # np.savez(f"{name}.outvar_pdsci", **outvar)
+        # np.savez(f"{name}.lambda_weighting_pdsci", **lambda_weighting)
+
+        # initialize constraint
+        super().__init__(
+            nodes=nodes,
+            dataset=dataset,
+            loss=loss,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            drop_last=True,
+            num_workers=num_workers,
+        )
 
 
 class IntegralConstraint(Constraint):
@@ -334,44 +588,54 @@ class IntegralConstraint(Constraint):
 
     def save_batch(self, filename):
         pass
+        # sample batch
         invar, true_outvar, lambda_weighting = next(self.dataloader)
-        invar = Constraint._set_device(invar, device=self.place,
-            requires_grad=True)
+        invar = Constraint._set_device(invar, device=self.place, requires_grad=True)
+
+        # rename values and save batch to vtk file TODO clean this up after graph unroll stuff
         for i in range(self.batch_size):
-            save_var = {key: value[i].cpu().detach().numpy() for key, value in
-                invar.items()}
-            var_to_polyvtk(save_var, filename + '_batch_' + str(i))
+            save_var = {
+                key: value[i].cpu().detach().numpy() for key, value in invar.items()
+            }
+            var_to_polyvtk(save_var, filename + "_batch_" + str(i))
 
     def load_data(self):
+        # get train points from dataloader
         invar, true_outvar, lambda_weighting = next(self.dataloader)
-        self._input_vars = Constraint._set_device(invar, device=self.place,
-            requires_grad=True)
-        self._target_vars = Constraint._set_device(true_outvar, device=self
-            .place)
-        self._lambda_weighting = Constraint._set_device(lambda_weighting,
-            device=self.place)
+
+        self._input_vars = Constraint._set_device(
+            invar, device=self.place, requires_grad=True
+        )
+        self._target_vars = Constraint._set_device(true_outvar, device=self.place)
+        self._lambda_weighting = Constraint._set_device(
+            lambda_weighting, device=self.place
+        )
 
     def load_data_static(self):
         if self._input_vars is None:
+            # Default loading if vars not allocated
             self.load_data()
         else:
+            # get train points from dataloader
             invar, true_outvar, lambda_weighting = next(self.dataloader)
-            input_vars = Constraint._set_device(invar, device=self.place,
-                requires_grad=False)
-            target_vars = Constraint._set_device(true_outvar, device=self.place
-                )
-            lambda_weighting = Constraint._set_device(lambda_weighting,
-                device=self.place)
+            # Set grads to false here for inputs, static var has allocation already
+            input_vars = Constraint._set_device(
+                invar, device=self.place, requires_grad=False
+            )
+            target_vars = Constraint._set_device(true_outvar, device=self.place)
+            lambda_weighting = Constraint._set_device(
+                lambda_weighting, device=self.place
+            )
+
             for key in input_vars.keys():
                 self._input_vars[key].data.copy_(input_vars[key])
             for key in target_vars.keys():
                 paddle.assign(target_vars[key], output=self._target_vars[key])
             for key in lambda_weighting.keys():
-                paddle.assign(lambda_weighting[key], output=self.
-                    _lambda_weighting[key])
+                paddle.assign(lambda_weighting[key], output=self._lambda_weighting[key])
 
     @property
-    def output_vars(self) ->Dict[str, Tensor]:
+    def output_vars(self) -> Dict[str, Tensor]:
         return self._output_vars
 
     @output_vars.setter
@@ -381,25 +645,39 @@ class IntegralConstraint(Constraint):
             self._output_vars[str(output)] = data[str(output)]
 
     def forward(self):
+        # compute pred outvar
         self._output_vars = self.model(self._input_vars)
 
-    def loss(self, step: int) ->Dict[str, paddle.Tensor]:
+    def loss(self, step: int) -> Dict[str, paddle.Tensor]:
         if self._output_vars is None:
-            logger.warn('Calling loss without forward call')
+            logger.warn("Calling loss without forward call")
             return {}
-        (list_invar, list_pred_outvar, list_true_outvar, list_lambda_weighting
-            ) = [], [], [], []
+
+        # split for individual integration
+        list_invar, list_pred_outvar, list_true_outvar, list_lambda_weighting = (
+            [],
+            [],
+            [],
+            [],
+        )
         for i in range(self.batch_size):
-            list_invar.append({key: value[i] for key, value in self.
-                _input_vars.items()})
-            list_pred_outvar.append({key: value[i] for key, value in self.
-                _output_vars.items()})
-            list_true_outvar.append({key: value[i] for key, value in self.
-                _target_vars.items()})
-            list_lambda_weighting.append({key: value[i] for key, value in
-                self._lambda_weighting.items()})
-        losses = self._loss(list_invar, list_pred_outvar, list_true_outvar,
-            list_lambda_weighting, step)
+            list_invar.append(
+                {key: value[i] for key, value in self._input_vars.items()}
+            )
+            list_pred_outvar.append(
+                {key: value[i] for key, value in self._output_vars.items()}
+            )
+            list_true_outvar.append(
+                {key: value[i] for key, value in self._target_vars.items()}
+            )
+            list_lambda_weighting.append(
+                {key: value[i] for key, value in self._lambda_weighting.items()}
+            )
+
+        # compute integral losses
+        losses = self._loss(
+            list_invar, list_pred_outvar, list_true_outvar, list_lambda_weighting, step
+        )
         return losses
 
 
@@ -453,65 +731,126 @@ class IntegralBoundaryConstraint(IntegralConstraint):
         Randomly shuffle examples in dataset every epoch, by default True
     """
 
-    def __init__(self, nodes: List[Node], geometry: Geometry, outvar: Dict[
-        str, Union[int, float, sp.Basic]], batch_size: int,
-        integral_batch_size: int, criteria: Union[sp.Basic, Callable, None]
-        =None, lambda_weighting: Dict[str, Union[int, float, sp.Basic]]=
-        None, parameterization: Union[Parameterization, None]=None,
-        fixed_dataset: bool=True, batch_per_epoch: int=100, quasirandom:
-        bool=False, num_workers: int=0, loss: Loss=IntegralLossNorm(),
-        shuffle: bool=True):
+    def __init__(
+        self,
+        nodes: List[Node],
+        geometry: Geometry,
+        outvar: Dict[str, Union[int, float, sp.Basic]],
+        batch_size: int,
+        integral_batch_size: int,
+        criteria: Union[sp.Basic, Callable, None] = None,
+        lambda_weighting: Dict[str, Union[int, float, sp.Basic]] = None,
+        parameterization: Union[Parameterization, None] = None,
+        fixed_dataset: bool = True,
+        batch_per_epoch: int = 100,
+        quasirandom: bool = False,
+        num_workers: int = 0,
+        loss: Loss = IntegralLossNorm(),
+        shuffle: bool = True,
+    ):
+
+        # convert dict to parameterization if needed
         if parameterization is None:
             parameterization = geometry.parameterization
         elif isinstance(parameterization, dict):
             parameterization = Parameterization(parameterization)
+
+        # Fixed number of integral examples
         if fixed_dataset:
+            # sample geometry to generate integral batchs
             list_invar = []
             list_outvar = []
             list_lambda_weighting = []
             for i in range(batch_size * batch_per_epoch):
+                # sample parameter ranges
                 if parameterization:
-                    specific_param_ranges = parameterization.sample(shape=1)
+                    specific_param_ranges = parameterization.sample(1)
                 else:
                     specific_param_ranges = {}
-                invar = geometry.sample_boundary(integral_batch_size,
-                    criteria=criteria, parameterization=Parameterization({
-                    sp.Symbol(key): float(value) for key, value in
-                    specific_param_ranges.items()}), quasirandom=quasirandom)
-                if not specific_param_ranges:
-                    specific_param_ranges = {'_': next(iter(invar.values())
-                        )[0:1]}
+
+                # sample boundary
+                invar = geometry.sample_boundary(
+                    integral_batch_size,
+                    criteria=criteria,
+                    parameterization=Parameterization(
+                        {
+                            sp.Symbol(key): float(value)
+                            for key, value in specific_param_ranges.items()
+                        }
+                    ),
+                    quasirandom=quasirandom,
+                )
+
+                # compute outvar
+                if (
+                    not specific_param_ranges
+                ):  # TODO this can be removed after a np_lambdify rewrite
+                    specific_param_ranges = {"_": next(iter(invar.values()))[0:1]}
                 outvar_star = _compute_outvar(specific_param_ranges, outvar)
+
+                # set lambda weighting
                 lambda_weighting_star = _compute_lambda_weighting(
-                    specific_param_ranges, outvar, lambda_weighting)
+                    specific_param_ranges, outvar, lambda_weighting
+                )
+
+                # store samples
                 list_invar.append(invar)
                 list_outvar.append(outvar_star)
                 list_lambda_weighting.append(lambda_weighting_star)
-            dataset = ListIntegralDataset(list_invar=list_invar,
-                list_outvar=list_outvar, list_lambda_weighting=
-                list_lambda_weighting)
+
+            # make dataset of integral planes
+            dataset = ListIntegralDataset(
+                list_invar=list_invar,
+                list_outvar=list_outvar,
+                list_lambda_weighting=list_lambda_weighting,
+            )
+        # Continuous sampling
         else:
+            # sample parameter ranges
             if parameterization:
-                param_ranges_fn = lambda : parameterization.sample(shape=1)
+                param_ranges_fn = lambda: parameterization.sample(1)
             else:
-                param_ranges_fn = lambda : {}
+                param_ranges_fn = lambda: {}
+
+            # invar function
             invar_fn = lambda param_range: geometry.sample_boundary(
-                integral_batch_size, criteria=criteria, parameterization=
-                Parameterization({sp.Symbol(key): float(value) for key,
-                value in param_range.items()}), quasirandom=quasirandom)
-            outvar_fn = lambda param_range: _compute_outvar(param_range, outvar
-                )
-            lambda_weighting_fn = (lambda param_range, outvar:
-                _compute_lambda_weighting(param_range, outvar,
-                lambda_weighting))
-            dataset = ContinuousIntegralIterableDataset(invar_fn=invar_fn,
-                outvar_fn=outvar_fn, batch_size=batch_size,
-                lambda_weighting_fn=lambda_weighting_fn, param_ranges_fn=
-                param_ranges_fn)
+                integral_batch_size,
+                criteria=criteria,
+                parameterization=Parameterization(
+                    {sp.Symbol(key): float(value) for key, value in param_range.items()}
+                ),
+                quasirandom=quasirandom,
+            )
+
+            # outvar function
+            outvar_fn = lambda param_range: _compute_outvar(param_range, outvar)
+
+            # lambda weighting function
+            lambda_weighting_fn = lambda param_range, outvar: _compute_lambda_weighting(
+                param_range, outvar, lambda_weighting
+            )
+
+            # make dataset of integral planes
+            dataset = ContinuousIntegralIterableDataset(
+                invar_fn=invar_fn,
+                outvar_fn=outvar_fn,
+                batch_size=batch_size,
+                lambda_weighting_fn=lambda_weighting_fn,
+                param_ranges_fn=param_ranges_fn,
+            )
+
         self.batch_size = batch_size
-        super().__init__(nodes=nodes, dataset=dataset, loss=loss,
-            batch_size=batch_size, shuffle=shuffle, drop_last=True,
-            num_workers=num_workers)
+
+        # initialize constraint
+        super().__init__(
+            nodes=nodes,
+            dataset=dataset,
+            loss=loss,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            drop_last=True,
+            num_workers=num_workers,
+        )
 
 
 class VariationalConstraint(Constraint):
@@ -524,90 +863,137 @@ class VariationalConstraint(Constraint):
     loss of variational = B1(u1, v1, g1, dom1) + B2(u2, v2, g2, dom2) + ...
     """
 
-    def __init__(self, nodes: List[Node], datasets: Dict[str,
-        DictVariationalDataset], batch_sizes: Dict[str, int], loss: Loss=
-        PointwiseLossNorm(), shuffle: bool=True, drop_last: bool=True,
-        num_workers: int=0):
+    def __init__(
+        self,
+        nodes: List[Node],
+        datasets: Dict[str, DictVariationalDataset],
+        batch_sizes: Dict[str, int],
+        loss: Loss = PointwiseLossNorm(),
+        shuffle: bool = True,
+        drop_last: bool = True,
+        num_workers: int = 0,
+    ):
+
+        # Get DDP manager
         self.manager = DistributedManager()
         self.place = self.manager.place
         if not drop_last and self.manager.cuda_graphs:
-            logger.info('drop_last must be true when using cuda graphs')
+            logger.info("drop_last must be true when using cuda graphs")
             drop_last = True
+
+        # make dataloader from dataset
         self.data_loaders = {}
         invar_keys = []
         outvar_keys = []
         for name in datasets:
-            self.data_loaders[name] = iter(Constraint.get_dataloader(
-                dataset=datasets[name], batch_size=batch_sizes[name],
-                shuffle=shuffle, drop_last=drop_last, num_workers=num_workers))
+            self.data_loaders[name] = iter(
+                Constraint.get_dataloader(
+                    dataset=datasets[name],
+                    batch_size=batch_sizes[name],
+                    shuffle=shuffle,
+                    drop_last=drop_last,
+                    num_workers=num_workers,
+                )
+            )
             invar_keys = invar_keys + datasets[name].invar_keys
             outvar_keys = outvar_keys + datasets[name].outvar_keys
-        self.model = Graph(nodes, Key.convert_list(list(set(invar_keys))),
-            Key.convert_list(list(set(outvar_keys))))
+        self.model = Graph(
+            nodes,
+            Key.convert_list(list(set(invar_keys))),
+            Key.convert_list(list(set(outvar_keys))),
+        )
         self.manager = DistributedManager()
         self.place = self.manager.place
         self.model.to(self.place)
         if self.manager.distributed:
             s = paddle.device.cuda.Stream()
             s.wait_stream(paddle.device.cuda.current_stream())
-            with torch.cuda.stream(s):
-                self.model = torch.nn.parallel.DistributedDataParallel(self
-                    .model, device_ids=[self.manager.local_rank],
-                    output_device=self.place, broadcast_buffers=self.
-                    manager.broadcast_buffers, find_unused_parameters=self.
-                    manager.find_unused_parameters, process_group=self.
-                    manager.group('data_parallel'))
+            with paddle.device.cuda.stream_guard(s):
+                self.model = paddle.DataParallel(
+                    self.model,
+                    find_unused_parameters=self.manager.find_unused_parameters,
+                )
             paddle.device.cuda.current_stream().wait_stream(s)
+
         self._input_names = Key.convert_list(list(set(invar_keys)))
         self._output_names = Key.convert_list(list(set(outvar_keys)))
+
         self._input_vars = None
         self._target_vars = None
         self._lambda_weighting = None
+
+        # put loss on device
         self._loss = loss.to(self.place)
 
     def save_batch(self, filename):
+        # sample batch
         for name, data_loader in self.data_loaders.items():
-            invar = Constraint._set_device(next(data_loader), device=self.
-                place, requires_grad=True)
-            if hasattr(self.model, 'module'):
+            invar = Constraint._set_device(
+                next(data_loader), device=self.place, requires_grad=True
+            )
+
+            # If using DDP, strip out collective stuff to prevent deadlocks
+            # This only works either when one process alone calls in to save_batch
+            # or when multiple processes independently save data
+            if hasattr(self.model, "module"):
                 modl = self.model.module
             else:
                 modl = self.model
+
+            # compute pred outvar
             outvar = modl(invar)
-            named_outvar = {('pred_' + key): value.cpu().detach().numpy() for
-                key, value in outvar.items()}
-            save_var = {**{key: value.cpu().detach().numpy() for key, value in
-                invar.items()}, **named_outvar}
-            var_to_polyvtk(save_var, filename + '_' + name)
+
+            named_outvar = {
+                "pred_" + key: value.cpu().detach().numpy()
+                for key, value in outvar.items()
+            }
+            save_var = {
+                **{key: value.cpu().detach().numpy() for key, value in invar.items()},
+                **named_outvar,
+            }
+            var_to_polyvtk(save_var, filename + "_" + name)
 
     def load_data(self):
         self._input_vars = {}
         self._output_vars = {}
         for name, data_loader in self.data_loaders.items():
+            # get train points from dataloader
             invar = next(data_loader)
-            self._input_vars[name] = Constraint._set_device(invar, device=
-                self.place, requires_grad=True)
+
+            self._input_vars[name] = Constraint._set_device(
+                invar, device=self.place, requires_grad=True
+            )
 
     def load_data_static(self):
         if self._input_vars is None:
+            # Default loading if vars not allocated
             self.load_data()
         else:
             for name, data_loader in self.data_loaders.items():
+                # get train points from dataloader
                 invar = next(data_loader)
-                input_vars = Constraint._set_device(invar, device=self.
-                    place, requires_grad=False)
+                # Set grads to false here for inputs, static var has allocation already
+                input_vars = Constraint._set_device(
+                    invar, device=self.place, requires_grad=False
+                )
+
                 for key in input_vars.keys():
                     self._input_vars[name][key].data.copy_(input_vars[key])
-                self._input_vars[name] = Constraint._set_device(invar,
-                    device=self.place, requires_grad=True)
+
+                self._input_vars[name] = Constraint._set_device(
+                    invar, device=self.place, requires_grad=True
+                )
 
     def forward(self):
+        # compute pred outvar
         for name in self._input_vars.keys():
             self._output_vars[name] = self.model(self._input_vars[name])
 
     def loss(self, step):
-        losses = self._loss(list(self._input_vars.values()), list(self.
-            _output_vars.values()), step)
+        # compute loss
+        losses = self._loss(
+            list(self._input_vars.values()), list(self._output_vars.values()), step
+        )
         return losses
 
 
@@ -619,33 +1005,67 @@ class VariationalDomainConstraint(VariationalConstraint):
     TODO add comprehensive doc string after refactor
     """
 
-    def __init__(self, nodes: List[Node], geometry: Geometry, outvar_names:
-        List[str], boundary_batch_size: int, interior_batch_size: int,
-        interior_bounds: Dict[sp.Basic, Tuple[float, float]]=None,
-        boundary_criteria: Union[sp.Basic, Callable, None]=None,
-        interior_criteria: Union[sp.Basic, Callable, None]=None,
-        parameterization: Union[Parameterization, None]=None,
-        batch_per_epoch: int=1000, quasirandom: bool=False, num_workers:
-        int=0, loss: Loss=PointwiseLossNorm(), shuffle: bool=True):
-        invar = geometry.sample_boundary(boundary_batch_size *
-            batch_per_epoch, criteria=boundary_criteria, parameterization=
-            parameterization, quasirandom=quasirandom)
-        invar['area'] *= batch_per_epoch
-        dataset_boundary = DictVariationalDataset(invar=invar, outvar_names
-            =outvar_names)
-        invar = geometry.sample_interior(interior_batch_size *
-            batch_per_epoch, bounds=interior_bounds, criteria=
-            interior_criteria, parameterization=parameterization,
-            quasirandom=quasirandom)
-        invar['area'] *= batch_per_epoch
-        dataset_interior = DictVariationalDataset(invar=invar, outvar_names
-            =outvar_names)
-        datasets = {'boundary': dataset_boundary, 'interior': dataset_interior}
-        batch_sizes = {'boundary': boundary_batch_size, 'interior':
-            interior_batch_size}
-        super().__init__(nodes=nodes, datasets=datasets, batch_sizes=
-            batch_sizes, loss=loss, shuffle=shuffle, drop_last=True,
-            num_workers=num_workers)
+    def __init__(
+        self,
+        nodes: List[Node],
+        geometry: Geometry,
+        outvar_names: List[str],
+        boundary_batch_size: int,
+        interior_batch_size: int,
+        interior_bounds: Dict[sp.Basic, Tuple[float, float]] = None,
+        boundary_criteria: Union[sp.Basic, Callable, None] = None,
+        interior_criteria: Union[sp.Basic, Callable, None] = None,
+        parameterization: Union[Parameterization, None] = None,
+        batch_per_epoch: int = 1000,
+        quasirandom: bool = False,
+        num_workers: int = 0,
+        loss: Loss = PointwiseLossNorm(),
+        shuffle: bool = True,
+    ):
+        # sample boundary
+        invar = geometry.sample_boundary(
+            boundary_batch_size * batch_per_epoch,
+            criteria=boundary_criteria,
+            parameterization=parameterization,
+            quasirandom=quasirandom,
+        )
+        invar["area"] *= batch_per_epoch
+
+        # make variational boundary dataset
+        dataset_boundary = DictVariationalDataset(
+            invar=invar,
+            outvar_names=outvar_names,
+        )
+
+        # sample interior
+        invar = geometry.sample_interior(
+            interior_batch_size * batch_per_epoch,
+            bounds=interior_bounds,
+            criteria=interior_criteria,
+            parameterization=parameterization,
+            quasirandom=quasirandom,
+        )
+        invar["area"] *= batch_per_epoch
+
+        # make variational interior dataset
+        dataset_interior = DictVariationalDataset(
+            invar=invar,
+            outvar_names=outvar_names,
+        )
+
+        datasets = {"boundary": dataset_boundary, "interior": dataset_interior}
+        batch_sizes = {"boundary": boundary_batch_size, "interior": interior_batch_size}
+
+        # initialize constraint
+        super().__init__(
+            nodes=nodes,
+            datasets=datasets,
+            batch_sizes=batch_sizes,
+            loss=loss,
+            shuffle=shuffle,
+            drop_last=True,
+            num_workers=num_workers,
+        )
 
 
 class DeepONetConstraint(PointwiseConstraint):
@@ -654,34 +1074,53 @@ class DeepONetConstraint(PointwiseConstraint):
     """
 
     def save_batch(self, filename):
+        # sample batch
         invar, true_outvar, lambda_weighting = next(self.dataloader)
-        invar = Constraint._set_device(invar, device=self.place,
-            requires_grad=True)
+        invar = Constraint._set_device(invar, device=self.place, requires_grad=True)
         true_outvar = Constraint._set_device(true_outvar, device=self.place)
-        lambda_weighting = Constraint._set_device(lambda_weighting, device=
-            self.place)
-        if hasattr(self.model, 'module'):
+        lambda_weighting = Constraint._set_device(lambda_weighting, device=self.place)
+
+        # If using DDP, strip out collective stuff to prevent deadlocks
+        # This only works either when one process alone calls in to save_batch
+        # or when multiple processes independently save data
+        if hasattr(self.model, "module"):
             modl = self.model.module
         else:
             modl = self.model
+
+        # compute pred outvar
         pred_outvar = modl(invar)
-        named_lambda_weighting = {('lambda_' + key): value for key, value in
-            lambda_weighting.items()}
-        named_true_outvar = {('true_' + key): value for key, value in
-            true_outvar.items()}
-        named_pred_outvar = {('pred_' + key): value for key, value in
-            pred_outvar.items()}
-        save_var = {**{key: value for key, value in invar.items()}, **
-            named_true_outvar, **named_pred_outvar, **named_lambda_weighting}
-        save_var = {key: value.cpu().detach().numpy() for key, value in
-            save_var.items()}
-        np.savez_compressed(filename + '.npz', **save_var)
+
+        # rename values and save batch to vtk file TODO clean this up after graph unroll stuff
+        named_lambda_weighting = {
+            "lambda_" + key: value for key, value in lambda_weighting.items()
+        }
+        named_true_outvar = {"true_" + key: value for key, value in true_outvar.items()}
+        named_pred_outvar = {"pred_" + key: value for key, value in pred_outvar.items()}
+        save_var = {
+            **{key: value for key, value in invar.items()},
+            **named_true_outvar,
+            **named_pred_outvar,
+            **named_lambda_weighting,
+        }
+        save_var = {
+            key: value.cpu().detach().numpy() for key, value in save_var.items()
+        }
+        np.savez_compressed(filename + ".npz", **save_var)
 
     @classmethod
-    def from_numpy(cls, nodes: List[Node], invar: Dict[str, np.ndarray],
-        outvar: Dict[str, np.ndarray], batch_size: int, lambda_weighting:
-        Dict[str, np.ndarray]=None, loss: Loss=PointwiseLossNorm(), shuffle:
-        bool=True, drop_last: bool=True, num_workers: int=0):
+    def from_numpy(
+        cls,
+        nodes: List[Node],
+        invar: Dict[str, np.ndarray],
+        outvar: Dict[str, np.ndarray],
+        batch_size: int,
+        lambda_weighting: Dict[str, np.ndarray] = None,
+        loss: Loss = PointwiseLossNorm(),
+        shuffle: bool = True,
+        drop_last: bool = True,
+        num_workers: int = 0,
+    ):
         """
         Create custom DeepONet constraint from numpy arrays.
 
@@ -707,8 +1146,20 @@ class DeepONetConstraint(PointwiseConstraint):
         num_workers : int
             Number of worker used in fetching data.
         """
-        dataset = DictPointwiseDataset(invar=invar, outvar=outvar,
-            lambda_weighting=lambda_weighting)
-        return cls(nodes=nodes, dataset=dataset, loss=loss, batch_size=
-            batch_size, shuffle=shuffle, drop_last=drop_last, num_workers=
-            num_workers)
+
+        # make point dataset
+        dataset = DictPointwiseDataset(
+            invar=invar,
+            outvar=outvar,
+            lambda_weighting=lambda_weighting,
+        )
+
+        return cls(
+            nodes=nodes,
+            dataset=dataset,
+            loss=loss,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            drop_last=drop_last,
+            num_workers=num_workers,
+        )

@@ -1,14 +1,32 @@
-import sys
-sys.path.append(
-    '/workspace/hesensen/paper_reprod/PaConvert/paddle_project_hss/utils')
-import paddle_aux
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import paddle
+import paddle.nn as nn
 import numpy as np
+from paddle import Tensor
 from typing import Dict, List, Tuple
 import itertools
+
 import modulus.sym.models.fully_connected as fully_connected
 import modulus.sym.models.layers as layers
-from modulus.sym.models.interpolation import _grid_knn_idx, _hyper_cube_weighting, smooth_step_2, linear_step
+from modulus.sym.models.interpolation import (
+    _grid_knn_idx,
+    _hyper_cube_weighting,
+    smooth_step_2,
+    linear_step,
+)
 from modulus.sym.models.arch import Arch
 from modulus.sym.key import Key
 from modulus.sym.distributed import DistributedManager
@@ -56,120 +74,196 @@ class MultiresolutionHashNetArch(Arch):
         Highest resolution of hash grids.
     """
 
-    def __init__(self, input_keys: List[Key], output_keys: List[Key],
-        detach_keys: List[Key]=[], activation_fn=layers.Activation.SILU,
-        layer_size: int=64, nr_layers: int=3, skip_connections: bool=False,
-        weight_norm: bool=True, adaptive_activations: bool=False, bounds:
-        List[Tuple[float, float]]=[(-1.0, 1.0), (-1.0, 1.0)], nr_levels:
-        int=16, nr_features_per_level: int=2, log2_hashmap_size: int=19,
-        base_resolution: int=2, finest_resolution: int=32) ->None:
-        super().__init__(input_keys=input_keys, output_keys=output_keys,
-            detach_keys=detach_keys)
-        self.xyzt_var = [x for x in self.input_key_dict if x in ['x', 'y',
-            'z', 't']]
-        self.params_var = [x for x in self.input_key_dict if x not in ['x',
-            'y', 'z', 't']]
-        in_features_xyzt = sum(v for k, v in self.input_key_dict.items() if
-            k in self.xyzt_var)
-        in_features_params = sum(v for k, v in self.input_key_dict.items() if
-            k in self.params_var)
+    def __init__(
+        self,
+        input_keys: List[Key],
+        output_keys: List[Key],
+        detach_keys: List[Key] = [],
+        activation_fn=layers.Activation.SILU,
+        layer_size: int = 64,
+        nr_layers: int = 3,
+        skip_connections: bool = False,
+        weight_norm: bool = True,
+        adaptive_activations: bool = False,
+        bounds: List[Tuple[float, float]] = [(-1.0, 1.0), (-1.0, 1.0)],
+        nr_levels: int = 16,
+        nr_features_per_level: int = 2,
+        log2_hashmap_size: int = 19,
+        base_resolution: int = 2,
+        finest_resolution: int = 32,
+    ) -> None:
+        super().__init__(
+            input_keys=input_keys, output_keys=output_keys, detach_keys=detach_keys
+        )
+
+        # get needed input output information
+        self.xyzt_var = [x for x in self.input_key_dict if x in ["x", "y", "z", "t"]]
+        self.params_var = [
+            x for x in self.input_key_dict if x not in ["x", "y", "z", "t"]
+        ]
+        in_features_xyzt = sum(
+            (v for k, v in self.input_key_dict.items() if k in self.xyzt_var)
+        )
+        in_features_params = sum(
+            (v for k, v in self.input_key_dict.items() if k in self.params_var)
+        )
         in_features = in_features_xyzt + in_features_params
         out_features = sum(self.output_key_dict.values())
         if len(self.params_var) == 0:
             self.params_var = None
+
+        # get device for torch constants used in inference
         self.place = DistributedManager().device
+
+        # store hash grid parameters
         self.bounds = bounds
         self.log2_hashmap_size = log2_hashmap_size
-        self.base_resolution = paddle.to_tensor(data=[base_resolution],
-            dtype='float32')
-        self.finest_resolution = paddle.to_tensor(data=[finest_resolution],
-            dtype='float32')
+        self.base_resolution = paddle.to_tensor([base_resolution], dtype="float32")
+        self.finest_resolution = paddle.to_tensor([finest_resolution], dtype="float32")
         self.nr_levels = nr_levels
         self.nr_features_per_level = nr_features_per_level
-        self.embedding = paddle.nn.Embedding(num_embeddings=self.nr_levels *
-            2 ** self.log2_hashmap_size, embedding_dim=self.
-            nr_features_per_level)
-        paddle.nn.initializer.Uniform(a=-0.001, b=0.001)(self.embedding.weight)
-        self.b = np.exp((np.log(self.finest_resolution) - np.log(self.
-            base_resolution)) / (nr_levels - 1))
+
+        # make embeddings
+        self.embedding = paddle.nn.Embedding(
+            num_embeddings=self.nr_levels * 2**self.log2_hashmap_size,
+            embedding_dim=self.nr_features_per_level,
+        )
+        nn.initializer.Uniform(a=-0.001, b=0.001)(self.embedding.weight)
+        self.b = np.exp(
+            (np.log(self.finest_resolution) - np.log(self.base_resolution))
+            / (nr_levels - 1)
+        )
+
+        # make grid dx and start tensors
         list_dx = []
         list_start = []
         list_resolution = []
         for i in range(self.nr_levels):
-            resolution = int(np.floor(self.base_resolution * self.b ** i))
-            """Class Method: *.view, can not convert, please check whether it is torch.Tensor.*/Optimizer.*/nn.Module.*/torch.distributions.Distribution.*/torch.autograd.function.FunctionCtx.*/torch.profiler.profile.*/torch.autograd.profiler.profile.*, and convert manually"""
-            list_resolution.append(paddle.to_tensor(data=[resolution]).to(
-                self.place).reshape([1, 1]))
-            adjust_factor = (8253729 ** i + 2396403) % 32767 / 32767.0
-            not_adjusted_dx = [((x[1] - x[0]) / (resolution - 1)) for x in
-                self.bounds]
-            grid = [(b[0] + (-2.0 + adjust_factor) * x, b[1] + (2.0 +
-                adjust_factor) * x, resolution) for b, x in zip(self.bounds,
-                not_adjusted_dx)]
-            dx = paddle.to_tensor(data=[((x[1] - x[0]) / (x[2] - 1)) for x in
-                grid]).to(self.place)
-            """Class Method: *.view, can not convert, please check whether it is torch.Tensor.*/Optimizer.*/nn.Module.*/torch.distributions.Distribution.*/torch.autograd.function.FunctionCtx.*/torch.profiler.profile.*/torch.autograd.profiler.profile.*, and convert manually"""
+            # calculate resolution
+            resolution = int(np.floor(self.base_resolution * self.b**i))
+            list_resolution.append(
+                paddle.to_tensor([resolution]).to(self.place).reshape([1, 1])
+            )
+
+            # make adjust factor
+            adjust_factor = (8253729**i + 2396403) % 32767 / 32767.0
+
+            # compute grid and adjust it
+            not_adjusted_dx = [((x[1] - x[0]) / (resolution - 1)) for x in self.bounds]
+            grid = [
+                (
+                    b[0] + (-2.0 + adjust_factor) * x,
+                    b[1] + (2.0 + adjust_factor) * x,
+                    resolution,
+                )
+                for b, x in zip(self.bounds, not_adjusted_dx)
+            ]
+
+            # make grid spacing size tensor
+            dx = paddle.to_tensor([(x[1] - x[0]) / (x[2] - 1) for x in grid]).to(
+                self.place
+            )
             dx = dx.reshape([1, len(grid)])
             list_dx.append(dx)
-            start = paddle.to_tensor(data=[val[0] for val in grid]).to(self
-                .place)
-            """Class Method: *.view, can not convert, please check whether it is torch.Tensor.*/Optimizer.*/nn.Module.*/torch.distributions.Distribution.*/torch.autograd.function.FunctionCtx.*/torch.profiler.profile.*/torch.autograd.profiler.profile.*, and convert manually"""
+
+            # make start tensor of grid
+            start = paddle.to_tensor([val[0] for val in grid]).to(self.place)
             start = start.reshape([1, len(grid)])
             list_start.append(start)
-        self.resolutions = paddle.stack(x=list_resolution, axis=1)
-        self.dx = paddle.stack(x=list_dx, axis=1)
-        self.start = paddle.stack(x=list_start, axis=1)
-        """Class Method: *.view, can not convert, please check whether it is torch.Tensor.*/Optimizer.*/nn.Module.*/torch.distributions.Distribution.*/torch.autograd.function.FunctionCtx.*/torch.profiler.profile.*/torch.autograd.profiler.profile.*, and convert manually"""
-        self.hyper_cube = paddle.to_tensor(data=list(itertools.product(*(
-            len(self.bounds) * [[0, 1]])))).to(self.place).reshape([1, 1, -1,
-            len(bounds)])
+
+        # stack values
+        self.resolutions = paddle.stack(list_resolution, axis=1)
+        self.dx = paddle.stack(list_dx, axis=1)
+        self.start = paddle.stack(list_start, axis=1)
+
+        # hyper cube for adding to lower point index
+        self.hyper_cube = (
+            paddle.to_tensor(list(itertools.product(*(len(self.bounds) * [[0, 1]]))))
+            .to(self.place)
+            .reshape([1, 1, -1, len(bounds)])
+        )
+
+        # multiply factor for hash encoding to order layers
         list_mul_factor = []
-        mul_factor = paddle.to_tensor(data=[1], dtype='int32').to(self.place)
+        mul_factor = paddle.to_tensor([1], dtype="int32").to(self.place)
         for r in range(self.nr_levels):
             for d in range(len(self.bounds)):
                 list_mul_factor.append(mul_factor.clone())
                 mul_factor *= self.resolutions[0, r, 0]
-                mul_factor %= 20731370
-        """Class Method: *.view, can not convert, please check whether it is torch.Tensor.*/Optimizer.*/nn.Module.*/torch.distributions.Distribution.*/torch.autograd.function.FunctionCtx.*/torch.profiler.profile.*/torch.autograd.profiler.profile.*, and convert manually"""
-        self.mul_factor = paddle.stack(x=list_mul_factor).reshape([1, self.
-            nr_levels, 1, len(self.bounds)])
-        self.fc = fully_connected.FullyConnectedArchCore(in_features=self.
-            nr_features_per_level * nr_levels + in_features_params,
-            layer_size=layer_size, out_features=out_features, nr_layers=
-            nr_layers, skip_connections=skip_connections, activation_fn=
-            activation_fn, adaptive_activations=adaptive_activations,
-            weight_norm=weight_norm)
+                mul_factor %= 20731370  # prevent overflow
+        self.mul_factor = paddle.stack(list_mul_factor).reshape(
+            [1, self.nr_levels, 1, len(self.bounds)]
+        )
 
-    def forward(self, in_vars: Dict[str, paddle.Tensor]) ->Dict[str, paddle.Tensor]:
-        in_xyzt_var = self.prepare_input(in_vars, self.xyzt_var,
-            detach_dict=self.detach_key_dict, dim=-1, input_scales=self.
-            input_scales)
-        unsqueezed_xyzt = paddle.unsqueeze(x=in_xyzt_var, axis=1)
-        lower_indice = paddle.floor(x=(unsqueezed_xyzt - self.start) / self.dx
-            ).astype(dtype='int32')
-        all_indice = paddle.unsqueeze(x=lower_indice, axis=-2
-            ) + self.hyper_cube
+        # make fully connected decoding network
+        self.fc = fully_connected.FullyConnectedArchCore(
+            in_features=(self.nr_features_per_level * nr_levels) + in_features_params,
+            layer_size=layer_size,
+            out_features=out_features,
+            nr_layers=nr_layers,
+            skip_connections=skip_connections,
+            activation_fn=activation_fn,
+            adaptive_activations=adaptive_activations,
+            weight_norm=weight_norm,
+        )
+
+    def forward(self, in_vars: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        # get spacial inputs and hash encode
+        in_xyzt_var = self.prepare_input(
+            in_vars,
+            self.xyzt_var,
+            detach_dict=self.detach_key_dict,
+            dim=-1,
+            input_scales=self.input_scales,
+        )
+
+        # unsqueeze input to operate on all grids at once
+        unsqueezed_xyzt = paddle.unsqueeze(in_xyzt_var, 1)
+
+        # get lower and upper bounds cells
+        lower_indice = paddle.floor((unsqueezed_xyzt - self.start) / self.dx).astype(
+            "int32"
+        )
+        all_indice = paddle.unsqueeze(lower_indice, -2) + self.hyper_cube
         lower_point = lower_indice * self.dx + self.start
         upper_point = lower_point + self.dx
-        key = paddle.sum(x=all_indice * self.mul_factor, axis=-1)
-        key = 10000003 * key + 124777 * paddle.bitwise_xor(x=key, y=paddle.
-            to_tensor(data=3563504501))
-        key = paddle.to_tensor(data=self.nr_levels * (1 << self.
-            log2_hashmap_size) - 1).to(key.place) & key
+
+        # get hash from indices and resolutions
+        key = paddle.sum(all_indice * self.mul_factor, axis=-1)
+        key = 10000003 * key + 124777 * paddle.bitwise_xor(
+            key, paddle.to_tensor(3563504501)
+        )  # shuffle it
+        key = (
+            paddle.to_tensor(self.nr_levels * (1 << self.log2_hashmap_size) - 1).to(
+                key.place
+            )
+            & key
+        )
+
+        # compute embedding
         embed = self.embedding(key)
-        smoothed_lower_point = smooth_step_2((unsqueezed_xyzt - lower_point
-            ) / self.dx)
-        smoother_upper_point = smooth_step_2(-(unsqueezed_xyzt -
-            upper_point) / self.dx)
-        weights = _hyper_cube_weighting(smoothed_lower_point,
-            smoother_upper_point)
-        hash_xyzt = paddle.sum(x=embed * weights, axis=-2)
-        x = paddle.reshape(x=hash_xyzt, shape=[hash_xyzt.shape[0], -1])
+
+        # compute smooth step interpolation of embeddings
+        smoothed_lower_point = smooth_step_2((unsqueezed_xyzt - lower_point) / self.dx)
+        smoother_upper_point = smooth_step_2(-(unsqueezed_xyzt - upper_point) / self.dx)
+        weights = _hyper_cube_weighting(smoothed_lower_point, smoother_upper_point)
+
+        # add embedding to list
+        hash_xyzt = paddle.sum(embed * weights, axis=-2)
+        x = paddle.reshape(hash_xyzt, [hash_xyzt.shape[0], -1])
+
+        # add other features
         if self.params_var is not None:
-            in_params_var = self.prepare_input(in_vars, self.params_var,
-                detach_dict=self.detach_key_dict, dim=-1, input_scales=self
-                .input_scales)
-            x = paddle.concat(x=(x, in_params_var), axis=-1)
+            in_params_var = self.prepare_input(
+                in_vars,
+                self.params_var,
+                detach_dict=self.detach_key_dict,
+                dim=-1,
+                input_scales=self.input_scales,
+            )
+            x = paddle.concat((x, in_params_var), axis=-1)
+
         x = self.fc(x)
-        return self.prepare_output(x, self.output_key_dict, dim=-1,
-            output_scales=self.output_scales)
+        return self.prepare_output(
+            x, self.output_key_dict, dim=-1, output_scales=self.output_scales
+        )

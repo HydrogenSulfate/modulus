@@ -1,3 +1,17 @@
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import paddle
 import types
 from modulus.sym.distributed.manager import DistributedManager
@@ -20,8 +34,7 @@ class _CopyToMatmulParallelRegion(paddle.autograd.PyLayer):
 
     @staticmethod
     def backward(ctx, grad_output):
-        return _reduce(grad_output, group=DistributedManager().group(
-            'model_parallel'))
+        return _reduce(grad_output, group=DistributedManager().group("model_parallel"))
 
 
 class _ReduceFromMatmulParallelRegion(paddle.autograd.PyLayer):
@@ -29,13 +42,11 @@ class _ReduceFromMatmulParallelRegion(paddle.autograd.PyLayer):
 
     @staticmethod
     def symbolic(graph, input_):
-        return _reduce(input_, group=DistributedManager().group(
-            'model_parallel'))
+        return _reduce(input_, group=DistributedManager().group("model_parallel"))
 
     @staticmethod
     def forward(ctx, input_):
-        return _reduce(input_, group=DistributedManager().group(
-            'model_parallel'))
+        return _reduce(input_, group=DistributedManager().group("model_parallel"))
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -47,19 +58,21 @@ class _ScatterToMatmulParallelRegion(paddle.autograd.PyLayer):
 
     @staticmethod
     def symbolic(graph, input_, dim_):
-        return _split(input_, dim_, group=DistributedManager().group(
-            'model_parallel'))
+        return _split(input_, dim_, group=DistributedManager().group("model_parallel"))
 
     @staticmethod
     def forward(ctx, input_, dim_):
         ctx.dim = dim_
-        return _split(input_, dim_, group=DistributedManager().group(
-            'model_parallel'))
+        return _split(input_, dim_, group=DistributedManager().group("model_parallel"))
 
     @staticmethod
     def backward(ctx, grad_output):
-        return _gather(grad_output, ctx.dim, group=DistributedManager().
-            group('model_parallel')), None
+        return (
+            _gather(
+                grad_output, ctx.dim, group=DistributedManager().group("model_parallel")
+            ),
+            None,
+        )
 
 
 class _GatherFromMatmulParallelRegion(paddle.autograd.PyLayer):
@@ -67,19 +80,21 @@ class _GatherFromMatmulParallelRegion(paddle.autograd.PyLayer):
 
     @staticmethod
     def symbolic(graph, input_, dim_):
-        return _gather(input_, dim_, group=DistributedManager().group(
-            'model_parallel'))
+        return _gather(input_, dim_, group=DistributedManager().group("model_parallel"))
 
     @staticmethod
     def forward(ctx, input_, dim_):
         ctx.dim = dim_
-        return _gather(input_, dim_, group=DistributedManager().group(
-            'model_parallel'))
+        return _gather(input_, dim_, group=DistributedManager().group("model_parallel"))
 
     @staticmethod
     def backward(ctx, grad_output):
-        return _split(grad_output, ctx.dim, group=DistributedManager().
-            group('model_parallel')), None
+        return (
+            _split(
+                grad_output, ctx.dim, group=DistributedManager().group("model_parallel")
+            ),
+            None,
+        )
 
 
 class _GatherWithinMatmulParallelRegion(paddle.autograd.PyLayer):
@@ -87,21 +102,20 @@ class _GatherWithinMatmulParallelRegion(paddle.autograd.PyLayer):
 
     @staticmethod
     def symbolic(graph, input_, dim_):
-        return _gather(input_, dim_, group=DistributedManager().group(
-            'model_parallel'))
+        return _gather(input_, dim_, group=DistributedManager().group("model_parallel"))
 
     @staticmethod
     def forward(ctx, input_, dim_):
         ctx.dim = dim_
-        return _gather(input_, dim_, group=DistributedManager().group(
-            'model_parallel'))
+        return _gather(input_, dim_, group=DistributedManager().group("model_parallel"))
 
     @staticmethod
     def backward(ctx, grad_output):
-        red = _reduce(grad_output, group=DistributedManager().group(
-            'model_parallel'))
-        return _split(red, ctx.dim, group=DistributedManager().group(
-            'model_parallel')), None
+        red = _reduce(grad_output, group=DistributedManager().group("model_parallel"))
+        return (
+            _split(red, ctx.dim, group=DistributedManager().group("model_parallel")),
+            None,
+        )
 
 
 def copy_to_matmul_parallel_region(input_):

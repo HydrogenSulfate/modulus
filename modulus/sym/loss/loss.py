@@ -1,28 +1,46 @@
-import sys
-sys.path.append(
-    '/workspace/hesensen/paper_reprod/PaConvert/paddle_project_hss/utils')
-import paddle_aux
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import paddle
 import pathlib
-from typing import Dict, Tuple, List, Union
+import paddle.nn as nn
 from paddle import Tensor
 
-class LossL2(paddle.autograd.PyLayer):
+from typing import Dict, Tuple, List, Union
+from paddle.autograd import PyLayer
 
+
+class LossL2(PyLayer):
     @staticmethod
-    def forward(ctx, pred_outvar: paddle.Tensor, true_outvar: paddle.Tensor,
-        lambda_weighting: paddle.Tensor, area: paddle.Tensor):
+    def forward(
+        ctx,
+        pred_outvar: Tensor,
+        true_outvar: Tensor,
+        lambda_weighting: Tensor,
+        area: Tensor,
+    ):
         ctx.save_for_backward(pred_outvar, true_outvar, lambda_weighting, area)
-        loss = pde_cpp.l2_loss_forward(pred_outvar, true_outvar,
-            lambda_weighting, area)
+        loss = pde_cpp.l2_loss_forward(pred_outvar, true_outvar, lambda_weighting, area)
         return loss
 
     @staticmethod
     def backward(ctx, grad_output):
-        """Class Attribute: torch.autograd.function.FunctionCtx.saved_tensors, can not convert, please check whether it is torch.Tensor.*/torch.autograd.function.FunctionCtx.*/torch.distributions.Distribution.* and convert manually"""
         pred_outvar, true_outvar, lambda_weighting, area = ctx.saved_tensors
-        outputs = pde_cpp.l2_loss_backward(grad_output, pred_outvar,
-            true_outvar, lambda_weighting, area)
+
+        outputs = pde_cpp.l2_loss_backward(
+            grad_output, pred_outvar, true_outvar, lambda_weighting, area
+        )
         return outputs[0], None, None, None
 
 
@@ -34,10 +52,15 @@ class Loss(paddle.nn.Layer):
     def __init__(self):
         super().__init__()
 
-    def forward(self, invar: Dict[str, paddle.Tensor], pred_outvar: Dict[str,
-        paddle.Tensor], true_outvar: Dict[str, paddle.Tensor], lambda_weighting: Dict[str,
-        paddle.Tensor], step: int) ->Dict[str, paddle.Tensor]:
-        raise NotImplementedError('Subclass of Loss needs to implement this')
+    def forward(
+        self,
+        invar: Dict[str, Tensor],
+        pred_outvar: Dict[str, Tensor],
+        true_outvar: Dict[str, Tensor],
+        lambda_weighting: Dict[str, Tensor],
+        step: int,
+    ) -> Dict[str, Tensor]:
+        raise NotImplementedError("Subclass of Loss needs to implement this")
 
 
 class PointwiseLossNorm(Loss):
@@ -51,28 +74,41 @@ class PointwiseLossNorm(Loss):
         Order of the loss. For example, `ord=2` would be the L2 loss.
     """
 
-    def __init__(self, ord: int=2):
+    def __init__(self, ord: int = 2):
         super().__init__()
         self.ord: int = ord
 
     @staticmethod
-    def _loss(invar: Dict[str, Tensor], pred_outvar: Dict[str, Tensor],
-        true_outvar: Dict[str, Tensor], lambda_weighting: Dict[str, Tensor],
-        step: int, ord: float) ->Dict[str, Tensor]:
+    def _loss(
+        invar: Dict[str, Tensor],
+        pred_outvar: Dict[str, Tensor],
+        true_outvar: Dict[str, Tensor],
+        lambda_weighting: Dict[str, Tensor],
+        step: int,
+        ord: float,
+    ) -> Dict[str, Tensor]:
         losses = {}
+        # import numpy as np
         for key, value in pred_outvar.items():
-            l = lambda_weighting[key] * paddle.abs(x=pred_outvar[key] -
-                true_outvar[key]).pow(y=ord)
-            if 'area' in invar.keys():
-                l *= invar['area']
+            l = lambda_weighting[key] * paddle.abs(
+                pred_outvar[key] - true_outvar[key]
+            ).pow(ord)
+            if "area" in invar.keys():
+                l *= invar["area"]
             losses[key] = l.sum()
         return losses
 
-    def forward(self, invar: Dict[str, Tensor], pred_outvar: Dict[str,
-        Tensor], true_outvar: Dict[str, Tensor], lambda_weighting: Dict[str,
-        Tensor], step: int) ->Dict[str, Tensor]:
-        return PointwiseLossNorm._loss(invar, pred_outvar, true_outvar,
-            lambda_weighting, step, self.ord)
+    def forward(
+        self,
+        invar: Dict[str, Tensor],
+        pred_outvar: Dict[str, Tensor],
+        true_outvar: Dict[str, Tensor],
+        lambda_weighting: Dict[str, Tensor],
+        step: int,
+    ) -> Dict[str, Tensor]:
+        return PointwiseLossNorm._loss(
+            invar, pred_outvar, true_outvar, lambda_weighting, step, self.ord
+        )
 
 
 class IntegralLossNorm(Loss):
@@ -86,38 +122,60 @@ class IntegralLossNorm(Loss):
         Order of the loss. For example, `ord=2` would be the L2 loss.
     """
 
-    def __init__(self, ord: int=2):
+    def __init__(self, ord: int = 2):
         super().__init__()
         self.ord: int = ord
 
     @staticmethod
-    def _loss(list_invar: List[Dict[str, Tensor]], list_pred_outvar: List[
-        Dict[str, Tensor]], list_true_outvar: List[Dict[str, Tensor]],
-        list_lambda_weighting: List[Dict[str, Tensor]], step: int, ord: float
-        ) ->Dict[str, Tensor]:
-        losses = {key: (0) for key in list_pred_outvar[0].keys()}
-        for invar, pred_outvar, true_outvar, lambda_weighting in zip(list_invar
-            , list_pred_outvar, list_true_outvar, list_lambda_weighting):
+    def _loss(
+        list_invar: List[Dict[str, Tensor]],
+        list_pred_outvar: List[Dict[str, Tensor]],
+        list_true_outvar: List[Dict[str, Tensor]],
+        list_lambda_weighting: List[Dict[str, Tensor]],
+        step: int,
+        ord: float,
+    ) -> Dict[str, Tensor]:
+
+        # compute integral losses
+        losses = {key: 0 for key in list_pred_outvar[0].keys()}
+        for invar, pred_outvar, true_outvar, lambda_weighting in zip(
+            list_invar, list_pred_outvar, list_true_outvar, list_lambda_weighting
+        ):
             for key in pred_outvar.keys():
-                losses[key] += (lambda_weighting[key] * paddle.abs(x=
-                    true_outvar[key] - (invar['area'] * pred_outvar[key]).
-                    sum()).pow(y=ord)).sum()
+                losses[key] += (
+                    lambda_weighting[key]
+                    * paddle.abs(
+                        true_outvar[key] - (invar["area"] * pred_outvar[key]).sum()
+                    ).pow(ord)
+                ).sum()
         return losses
+
         losses = {}
         for key, value in pred_outvar.items():
-            l = lambda_weighting[key] * paddle.abs(x=pred_outvar[key] -
-                true_outvar[key]).pow(y=ord)
-            if 'area' in invar.keys():
-                l *= invar['area']
+            l = lambda_weighting[key] * paddle.abs(
+                pred_outvar[key] - true_outvar[key]
+            ).pow(ord)
+            if "area" in invar.keys():
+                l *= invar["area"]
             losses[key] = l.sum()
         return losses
 
-    def forward(self, list_invar: List[Dict[str, Tensor]], list_pred_outvar:
-        List[Dict[str, Tensor]], list_true_outvar: List[Dict[str, Tensor]],
-        list_lambda_weighting: List[Dict[str, Tensor]], step: int) ->Dict[
-        str, Tensor]:
-        return IntegralLossNorm._loss(list_invar, list_pred_outvar,
-            list_true_outvar, list_lambda_weighting, step, self.ord)
+    def forward(
+        self,
+        list_invar: List[Dict[str, Tensor]],
+        list_pred_outvar: List[Dict[str, Tensor]],
+        list_true_outvar: List[Dict[str, Tensor]],
+        list_lambda_weighting: List[Dict[str, Tensor]],
+        step: int,
+    ) -> Dict[str, Tensor]:
+        return IntegralLossNorm._loss(
+            list_invar,
+            list_pred_outvar,
+            list_true_outvar,
+            list_lambda_weighting,
+            step,
+            self.ord,
+        )
 
 
 class DecayedLossNorm(Loss):
@@ -125,8 +183,13 @@ class DecayedLossNorm(Loss):
     Base class for decayed loss norm
     """
 
-    def __init__(self, start_ord: int=2, end_ord: int=1, decay_steps: int=
-        1000, decay_rate: float=0.95):
+    def __init__(
+        self,
+        start_ord: int = 2,
+        end_ord: int = 1,
+        decay_steps: int = 1000,
+        decay_rate: float = 0.95,
+    ):
         super().__init__()
         self.start_ord: int = start_ord
         self.end_ord: int = end_ord
@@ -134,8 +197,9 @@ class DecayedLossNorm(Loss):
         self.decay_rate: int = decay_rate
 
     def ord(self, step):
-        return self.start_ord - (self.start_ord - self.end_ord) * (1.0 - 
-            self.decay_rate ** (step / self.decay_steps))
+        return self.start_ord - (self.start_ord - self.end_ord) * (
+            1.0 - self.decay_rate ** (step / self.decay_steps)
+        )
 
 
 class DecayedPointwiseLossNorm(DecayedLossNorm):
@@ -156,11 +220,17 @@ class DecayedPointwiseLossNorm(DecayedLossNorm):
         will be given by `ord = start_ord - (start_ord - end_ord) * (1.0 - decay_rate**(current_step / decay_steps))`.
     """
 
-    def forward(self, invar: Dict[str, Tensor], pred_outvar: Dict[str,
-        Tensor], true_outvar: Dict[str, Tensor], lambda_weighting: Dict[str,
-        Tensor], step: int) ->Dict[str, Tensor]:
-        return PointwiseLossNorm._loss(invar, pred_outvar, true_outvar,
-            lambda_weighting, step, self.ord(step))
+    def forward(
+        self,
+        invar: Dict[str, Tensor],
+        pred_outvar: Dict[str, Tensor],
+        true_outvar: Dict[str, Tensor],
+        lambda_weighting: Dict[str, Tensor],
+        step: int,
+    ) -> Dict[str, Tensor]:
+        return PointwiseLossNorm._loss(
+            invar, pred_outvar, true_outvar, lambda_weighting, step, self.ord(step)
+        )
 
 
 class DecayedIntegralLossNorm(DecayedLossNorm):
@@ -181,12 +251,22 @@ class DecayedIntegralLossNorm(DecayedLossNorm):
         will be given by `ord = start_ord - (start_ord - end_ord) * (1.0 - decay_rate**(current_step / decay_steps))`.
     """
 
-    def forward(self, list_invar: List[Dict[str, Tensor]], list_pred_outvar:
-        List[Dict[str, Tensor]], list_true_outvar: List[Dict[str, Tensor]],
-        list_lambda_weighting: List[Dict[str, Tensor]], step: int) ->Dict[
-        str, Tensor]:
-        return IntegralLossNorm._loss(list_invar, list_pred_outvar,
-            list_true_outvar, list_lambda_weighting, step, self.ord(step))
+    def forward(
+        self,
+        list_invar: List[Dict[str, Tensor]],
+        list_pred_outvar: List[Dict[str, Tensor]],
+        list_true_outvar: List[Dict[str, Tensor]],
+        list_lambda_weighting: List[Dict[str, Tensor]],
+        step: int,
+    ) -> Dict[str, Tensor]:
+        return IntegralLossNorm._loss(
+            list_invar,
+            list_pred_outvar,
+            list_true_outvar,
+            list_lambda_weighting,
+            step,
+            self.ord(step),
+        )
 
 
 class CausalLossNorm(Loss):
@@ -204,36 +284,65 @@ class CausalLossNorm(Loss):
         Number of chunks splitting the temporal domain evenly.
     """
 
-    def __init__(self, ord: int=2, eps: float=1.0, n_chunks=10):
+    def __init__(self, ord: int = 2, eps: float = 1.0, n_chunks=10):
         super().__init__()
         self.ord: int = ord
         self.eps: float = eps
         self.n_chunks: int = n_chunks
 
     @staticmethod
-    def _loss(invar: Dict[str, Tensor], pred_outvar: Dict[str, Tensor],
-        true_outvar: Dict[str, Tensor], lambda_weighting: Dict[str, Tensor],
-        step: int, ord: float, eps: float, n_chunks: int) ->Dict[str, Tensor]:
+    def _loss(
+        invar: Dict[str, Tensor],
+        pred_outvar: Dict[str, Tensor],
+        true_outvar: Dict[str, Tensor],
+        lambda_weighting: Dict[str, Tensor],
+        step: int,
+        ord: float,
+        eps: float,
+        n_chunks: int,
+    ) -> Dict[str, Tensor]:
         losses = {}
         for key, value in pred_outvar.items():
-            l = lambda_weighting[key] * paddle.abs(x=pred_outvar[key] -
-                true_outvar[key]).pow(y=ord)
-            if 'area' in invar.keys():
-                l *= invar['area']
+            l = lambda_weighting[key] * paddle.abs(
+                pred_outvar[key] - true_outvar[key]
+            ).pow(ord)
+
+            if "area" in invar.keys():
+                l *= invar["area"]
+
+            # batch size should be divided by the number of chunks
             if l.shape[0] % n_chunks != 0:
                 raise ValueError(
-                    'The batch size must be divided by the number of chunks')
+                    "The batch size must be divided by the number of chunks"
+                )
+            # divide the loss values into chunks
             l = l.reshape(n_chunks, -1)
             l = l.sum(axis=-1)
+            # compute causal temporal weights
             with paddle.no_grad():
-                w = paddle.exp(x=-eps * paddle.cumsum(x=l, axis=0))
+                w = paddle.exp(-eps * paddle.cumsum(l, axis=0))
                 w = w / w[0]
+
             l = w * l
             losses[key] = l.sum()
+
         return losses
 
-    def forward(self, invar: Dict[str, Tensor], pred_outvar: Dict[str,
-        Tensor], true_outvar: Dict[str, Tensor], lambda_weighting: Dict[str,
-        Tensor], step: int) ->Dict[str, Tensor]:
-        return CausalLossNorm._loss(invar, pred_outvar, true_outvar,
-            lambda_weighting, step, self.ord, self.eps, self.n_chunks)
+    def forward(
+        self,
+        invar: Dict[str, Tensor],
+        pred_outvar: Dict[str, Tensor],
+        true_outvar: Dict[str, Tensor],
+        lambda_weighting: Dict[str, Tensor],
+        step: int,
+    ) -> Dict[str, Tensor]:
+        return CausalLossNorm._loss(
+            invar,
+            pred_outvar,
+            true_outvar,
+            lambda_weighting,
+            step,
+            self.ord,
+            self.eps,
+            self.n_chunks,
+        )

@@ -1,33 +1,52 @@
-import sys
-sys.path.append(
-    '/workspace/hesensen/paper_reprod/PaConvert/paddle_project_hss/utils')
-import paddle_aux
-import paddle
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import itertools
+import paddle
 import numpy as np
 import logging
+from paddle.autograd import PyLayer
+
 from modulus.sym.constants import diff
 from modulus.sym.key import Key
 from modulus.sym.node import Node
 from modulus.sym.eq.mfd import FirstDeriv, SecondDeriv, ThirdDeriv, ForthDeriv
+
 from typing import Dict, List, Set, Optional, Union, Callable
+
 Tensor = paddle.Tensor
 logger = logging.getLogger(__name__)
 
-
-# @torch.jit.script
-def gradient(y: paddle.Tensor, x: List[paddle.Tensor]) ->List[paddle.Tensor]:
+# ==== Autodiff ====
+def gradient(y: paddle.Tensor, x: List[paddle.Tensor]) -> List[paddle.Tensor]:
     """
-    TorchScript function to compute the gradient of a tensor wrt multople inputs
+    TorchScript function to compute the gradient of a tensor wrt multiple inputs
     """
-    grad_outputs: List[Optional[paddle.Tensor]] = [paddle.ones_like(x=y)]
-    grad = paddle.grad(outputs=[y], inputs=x, grad_outputs=grad_outputs,
-        create_graph=True, allow_unused=True)
+    # grad_outputs: List[Optional[paddle.Tensor]] = [paddle.ones_like(y)]
+    grad = paddle.grad(
+        [
+            y,
+        ],
+        x,
+        # grad_outputs=grad_outputs,
+        create_graph=True,
+        # allow_unused=True,
+    )
     if grad is None:
-        grad = [paddle.zeros_like(x=xx) for xx in x]
+        grad = [paddle.zeros_like(xx) for xx in x]
     assert grad is not None
-    grad = [(g if g is not None else paddle.zeros_like(x=x[i])) for i, g in
-        enumerate(grad)]
+    grad = [g if g is not None else paddle.zeros_like(x[i]) for i, g in enumerate(grad)]
     return grad
 
 
@@ -50,62 +69,71 @@ class Derivative(paddle.nn.Layer):
             A list of keys of the required derivatives
         """
         super().__init__()
-        self.gradient_dict: Dict[str, Dict[str, int]] = {str(k): {str(w): w
-            .size for w in v} for k, v in bwd_derivative_dict.items()}
-        self.gradient_names: Dict[str, List[str]] = {k: [diff(k, der) for
-            der in v.keys()] for k, v in self.gradient_dict.items()}
-        self.nvtx_str: str = (
-            f'Auto-Diff Node: {list(self.gradient_dict.keys())}')
+
+        self.gradient_dict: Dict[str, Dict[str, int]] = {
+            str(k): {str(w): w.size for w in v} for k, v in bwd_derivative_dict.items()
+        }
+        self.gradient_names: Dict[str, List[str]] = {
+            k: [diff(k, der) for der in v.keys()] for k, v in self.gradient_dict.items()
+        }
+        self.nvtx_str: str = f"Auto-Diff Node: {list(self.gradient_dict.keys())}"
 
     @staticmethod
-    def prepare_input(input_variables: Dict[str, paddle.Tensor], mask: List
-        [str]) ->List[paddle.Tensor]:
+    def prepare_input(
+        input_variables: Dict[str, paddle.Tensor], mask: List[str]
+    ) -> List[paddle.Tensor]:
         return [input_variables[x] for x in mask]
 
     @staticmethod
-    def dict_output(output_tensors: List[paddle.Tensor], sizes: List[str],
-        var_name: str) ->Dict[str, paddle.Tensor]:
-        return {diff(var_name, name): output_tensors[i] for i, name in
-            enumerate(sizes)}
+    def dict_output(
+        output_tensors: List[paddle.Tensor], sizes: List[str], var_name: str
+    ) -> Dict[str, paddle.Tensor]:
+        return {diff(var_name, name): output_tensors[i] for i, name in enumerate(sizes)}
 
-    def forward(self, input_var: Dict[str, paddle.Tensor]) ->Dict[str,
-        paddle.Tensor]:
+    def forward(self, input_var: Dict[str, paddle.Tensor]) -> Dict[str, paddle.Tensor]:
         output_var = {}
         for var_name, grad_sizes in self.gradient_dict.items():
             var = input_var[var_name]
             grad_var = self.prepare_input(input_var, grad_sizes.keys())
             grad = gradient(var, grad_var)
-            grad_dict = {name: grad[i] for i, name in enumerate(self.
-                gradient_names[var_name])}
+            grad_dict = {
+                name: grad[i] for i, name in enumerate(self.gradient_names[var_name])
+            }
             output_var.update(grad_dict)
         return output_var
 
     @classmethod
-    def make_node(cls, inputs: List[Key], derivatives: List[Key], name=None,
-        jit=True):
+    def make_node(cls, inputs: List[Key], derivatives: List[Key], name=None, jit=True):
         derivatives = [d for d in derivatives if d not in inputs]
-        bwd_derivative_dict = _derivative_dict(inputs, derivatives, forward
-            =False)
+        bwd_derivative_dict = _derivative_dict(inputs, derivatives, forward=False)
         output_derivatives = []
         for key, value in bwd_derivative_dict.items():
-            output_derivatives += [Key(key.name, key.size, key.derivatives +
-                [x]) for x in value]
+            output_derivatives += [
+                Key(key.name, key.size, key.derivatives + [x]) for x in value
+            ]
+
         evaluate = cls(bwd_derivative_dict)
         nvtx_str = evaluate.nvtx_str
         if jit:
-            evaluate = torch.jit.script(evaluate)
-        derivative_node = Node(inputs, output_derivatives, evaluate, name=
-            nvtx_str if name is None else str(name))
+            raise NotImplementedError("JIT is not implemented for Derivative")
+            evaluate = paddle.jit.script(evaluate)
+
+        derivative_node = Node(
+            inputs,
+            output_derivatives,
+            evaluate,
+            name=(nvtx_str if name is None else str(name)),
+        )
         return derivative_node
 
 
 def _derivative_dict(var, derivatives, forward=False):
     needed = derivatives
-    while True:
+    while True:  # break apart diff to see if first order needed
         break_loop = True
         for n in needed:
             l_n = Key(n.name, n.size, n.derivatives[:-1])
-            if len(n.derivatives) > 1 and l_n not in needed and l_n not in var:
+            if (len(n.derivatives) > 1) and l_n not in needed and l_n not in var:
                 needed.append(l_n)
                 break_loop = False
         if break_loop:
@@ -113,8 +141,8 @@ def _derivative_dict(var, derivatives, forward=False):
     current = var
     diff_dict = {}
     for c, n in itertools.product(current, needed):
-        c_under_n = Key(n.name, n.size, n.derivatives[0:len(c.derivatives)])
-        if c == c_under_n and len(n.derivatives) == len(c.derivatives) + 1:
+        c_under_n = Key(n.name, n.size, n.derivatives[0 : len(c.derivatives)])
+        if (c == c_under_n) and (len(n.derivatives) == len(c.derivatives) + 1):
             if forward:
                 if n.derivatives[len(c.derivatives)] not in diff_dict:
                     diff_dict[n.derivatives[len(c.derivatives)]] = set()
@@ -127,13 +155,14 @@ def _derivative_dict(var, derivatives, forward=False):
     return diff_dict
 
 
+# ==== Meshless finite derivs ====
 class MeshlessFiniteDerivative(paddle.nn.Layer):
     """
     Module to compute derivatives using meshless finite difference
 
     Parameters
     ----------
-    model : torch.nn.Module
+    model : paddle.nn.Layer
         Forward torch module for calculating stencil values
     derivatives : List[Key]
         List of derivative keys to calculate
@@ -151,36 +180,40 @@ class MeshlessFiniteDerivative(paddle.nn.Layer):
 
     """
 
-    def __init__(self, model: paddle.nn.Layer, derivatives: List[Key], dx:
-        Union[float, Callable], order: int=2, max_batch_size: Union[int,
-        None]=None, double_cast: bool=True, input_keys: Union[List[Key],
-        None]=None):
+    def __init__(
+        self,
+        model: paddle.nn.Layer,
+        derivatives: List[Key],
+        dx: Union[float, Callable],
+        order: int = 2,
+        max_batch_size: Union[int, None] = None,
+        double_cast: bool = True,
+        input_keys: Union[List[Key], None] = None,
+    ):
         super().__init__()
+
         self.model = model
         self._dx = dx
         self.double_cast = double_cast
         self.max_batch_size = max_batch_size
         self.input_keys = input_keys
         self.count = 0
-        self.derivatives = {(1): [], (2): [], (3): [], (4): []}
+
+        self.derivatives = {1: [], 2: [], 3: [], 4: []}
         for key in derivatives:
             try:
                 self.derivatives[len(key.derivatives)].append(key)
             except:
                 raise NotImplementedError(
-                    f'{len(key.derivatives)}th derivatives not supported')
-        self.first_deriv = FirstDeriv(self.derivatives[1], self.dx, order=order
-            )
-        self.second_deriv = SecondDeriv(self.derivatives[2], self.dx, order
-            =order)
-        self.third_deriv = ThirdDeriv(self.derivatives[3], self.dx, order=order
-            )
-        self.forth_deriv = ForthDeriv(self.derivatives[4], self.dx, order=order
-            )
+                    f"{len(key.derivatives)}th derivatives not supported"
+                )
 
-    # @torch.jit.ignore()
-    def forward(self, inputs: Dict[str, paddle.Tensor]) ->Dict[str, paddle.
-        Tensor]:
+        self.first_deriv = FirstDeriv(self.derivatives[1], self.dx, order=order)
+        self.second_deriv = SecondDeriv(self.derivatives[2], self.dx, order=order)
+        self.third_deriv = ThirdDeriv(self.derivatives[3], self.dx, order=order)
+        self.forth_deriv = ForthDeriv(self.derivatives[4], self.dx, order=order)
+
+    def forward(self, inputs: Dict[str, paddle.Tensor]) -> Dict[str, paddle.Tensor]:
         self.count += 1
         dx = self.dx
         self.first_deriv.dx = dx
@@ -188,53 +221,71 @@ class MeshlessFiniteDerivative(paddle.nn.Layer):
         self.third_deriv.dx = dx
         self.forth_deriv.dx = dx
         paddle.framework.core.nvprof_nvtx_push(
-            f'Calculating meshless finite derivatives')
+            f"Calculating meshless finite derivatives"
+        )
+
+        # Assemble global stencil
         global_stencil = []
-        for deriv in [self.first_deriv, self.second_deriv, self.third_deriv,
-            self.forth_deriv]:
+        for deriv in [
+            self.first_deriv,
+            self.second_deriv,
+            self.third_deriv,
+            self.forth_deriv,
+        ]:
             stencil_list = deriv.stencil
+            # Remove centered stencil points if already in input dictionary
             for i, point in enumerate(stencil_list):
-                if point.split('::')[1] == str(0) and point.split('::')[0
-                    ] in inputs:
+                if point.split("::")[1] == str(0) and point.split("::")[0] in inputs:
                     stencil_list.pop(i)
             global_stencil.extend(stencil_list)
         global_stencil = list(set(global_stencil))
+
+        # Number of stencil points to fit into a forward pass
         input_batch_size = next(iter(inputs.values())).shape[0]
         if self.max_batch_size is None:
             num_batch = 1
         else:
-            num_batch = max([self.max_batch_size, input_batch_size]
-                ) // input_batch_size
+            num_batch = max([self.max_batch_size, input_batch_size]) // input_batch_size
+        # Stencil forward passes
         index = 0
         finite_diff_inputs = inputs.copy()
         while index < len(global_stencil):
-            paddle.framework.core.nvprof_nvtx_push(
-                f'Running stencil forward pass')
+            paddle.framework.core.nvprof_nvtx_push(f"Running stencil forward pass")
+            # Batch up stencil inputs
             stencil_batch = [global_stencil[index]]
             index += 1
-            for j in range(1, min([len(global_stencil) - (index - 1),
-                num_batch])):
+            for j in range(1, min([len(global_stencil) - (index - 1), num_batch])):
                 stencil_batch.append(global_stencil[index])
                 index += 1
+
             model_inputs = self._get_stencil_input(inputs, stencil_batch)
+
+            # Model forward
             outputs = self.model(model_inputs)
+
+            # Dissassemble batched inputs
             for key, value in outputs.items():
-                """Class Method: *.view, can not convert, please check whether it is torch.Tensor.*/Optimizer.*/nn.Module.*/torch.distributions.Distribution.*/torch.autograd.function.FunctionCtx.*/torch.profiler.profile.*/torch.autograd.profiler.profile.*, and convert manually"""
-                outputs[key] = paddle.split(x=value.view(-1, len(
-                    stencil_batch)), num_or_sections=value.view(-1, len(
-                    stencil_batch)).shape[1] // 1, axis=1)
+                outputs[key] = paddle.split(
+                    value.reshape([-1, len(stencil_batch)]),
+                    value.view(-1, len(stencil_batch)).shape[1] // 1,
+                    axis=1,
+                )
             for i, stencil_str in enumerate(stencil_batch):
                 for key, value in outputs.items():
-                    finite_diff_inputs[f'{key}>>{stencil_str}'] = value[i]
+                    finite_diff_inputs[f"{key}>>{stencil_str}"] = value[i]
             paddle.framework.core.nvprof_nvtx_pop()
-        paddle.framework.core.nvprof_nvtx_push(f'Calc finite difference')
-        if self.double_cast:
+
+        # Calc finite diff grads
+        paddle.framework.core.nvprof_nvtx_push(f"Calc finite difference")
+        if self.double_cast:  # Cast tensors to doubles for finite diff calc
             for key, value in finite_diff_inputs.items():
-                finite_diff_inputs[key] = value.astype(dtype='float64')
+                finite_diff_inputs[key] = value.astype(dtype="float64")
+
         outputs_first = self.first_deriv(finite_diff_inputs)
         outputs_second = self.second_deriv(finite_diff_inputs)
         outputs_third = self.third_deriv(finite_diff_inputs)
         outputs_forth = self.forth_deriv(finite_diff_inputs)
+
         outputs = inputs
         if self.double_cast:
             dtype = paddle.get_default_dtype()
@@ -246,21 +297,27 @@ class MeshlessFiniteDerivative(paddle.nn.Layer):
                 outputs_third[key] = value.astype(dtype)
             for key, value in outputs_forth.items():
                 outputs_forth[key] = value.astype(dtype)
-        outputs = {**inputs, **outputs_first, **outputs_second, **
-            outputs_third, **outputs_forth}
+        outputs = {
+            **inputs,
+            **outputs_first,
+            **outputs_second,
+            **outputs_third,
+            **outputs_forth,
+        }
         paddle.framework.core.nvprof_nvtx_pop()
         paddle.framework.core.nvprof_nvtx_pop()
         return outputs
 
     @property
     def dx(self):
-        if hasattr(self._dx, '__call__'):
+        if hasattr(self._dx, "__call__"):
             return self._dx(self.count)
         else:
             return self._dx
 
-    def _get_stencil_input(self, inputs: Dict[str, Tensor], stencil_strs:
-        List[str]) ->Dict[str, Tensor]:
+    def _get_stencil_input(
+        self, inputs: Dict[str, Tensor], stencil_strs: List[str]
+    ) -> Dict[str, Tensor]:
         """Creates a copy of the inputs tensor and adjusts its values based on
         the stencil str.
 
@@ -284,33 +341,41 @@ class MeshlessFiniteDerivative(paddle.nn.Layer):
         if self.input_keys is None:
             outputs = inputs.copy()
         else:
-            outputs = {str(key): inputs[str(key)].clone() for key in self.
-                input_keys}
+            outputs = {str(key): inputs[str(key)].clone() for key in self.input_keys}
+
         for key, value in outputs.items():
-            outputs[key] = value.tile(repeat_times=[1, len(stencil_strs)])
+            outputs[key] = value.tile([1, len(stencil_strs)])
         for i, stencil_str in enumerate(stencil_strs):
-            for point in stencil_str.split('&&'):
-                var_name = point.split('::')[0]
-                spacing = int(point.split('::')[1])
-                outputs[var_name][:, i] = outputs[var_name][:, i
-                    ] + spacing * self.dx
+            # Loop through points
+            for point in stencil_str.split("&&"):
+                var_name = point.split("::")[0]
+                spacing = int(point.split("::")[1])
+                outputs[var_name][:, i] = outputs[var_name][:, i] + spacing * self.dx
+
         for key, value in outputs.items():
-            """Class Method: *.view, can not convert, please check whether it is torch.Tensor.*/Optimizer.*/nn.Module.*/torch.distributions.Distribution.*/torch.autograd.function.FunctionCtx.*/torch.profiler.profile.*/torch.autograd.profiler.profile.*, and convert manually"""
             outputs[key] = value.view(-1, 1)
+
         return outputs
 
     @classmethod
-    def make_node(cls, node_model: Union[Node, paddle.nn.Layer],
-        derivatives: List[Key], dx: Union[float, Callable], order: int=2,
-        max_batch_size: Union[int, None]=None, name: str=None, double_cast:
-        bool=True, input_keys: Union[List[Key], List[str], None]=None):
+    def make_node(
+        cls,
+        node_model: Union[Node, paddle.nn.Layer],
+        derivatives: List[Key],
+        dx: Union[float, Callable],
+        order: int = 2,
+        max_batch_size: Union[int, None] = None,
+        name: str = None,
+        double_cast: bool = True,
+        input_keys: Union[List[Key], List[str], None] = None,
+    ):
         """Makes a meshless finite derivative node.
 
 
         Parameters
         ----------
-        node_model : Union[Node, torch.nn.Module]
-            Node or torch.nn.Module for computing FD stencil values.
+        node_model : Union[Node, paddle.nn.Layer]
+            Node or paddle.nn.Layer for computing FD stencil values.
             Part of the inputs to this model should consist of the independent
             variables and output the functional value
         derivatives : List[Key]
@@ -329,28 +394,48 @@ class MeshlessFiniteDerivative(paddle.nn.Layer):
             List of input keys to be used for input of forward model.
             Should be used if node_model is not a :obj:`Node`, by default None
         """
+
+        # We have two sets of input keys:
+        # input_keys: which are the list of inputs to the model for stencil points
+        # mfd_input_keys: input keys for the MFD node
         if input_keys is None:
             input_keys = []
             mfd_input_keys = []
         else:
             input_keys = [str(key) for key in input_keys]
             mfd_input_keys = [str(key) for key in input_keys]
+
         for derivative in derivatives:
             mfd_input_keys.append(derivative.name)
             for dstr in derivative.derivatives:
                 mfd_input_keys.append(dstr.name)
                 input_keys.append(dstr.name)
+
         if isinstance(node_model, Node):
             model = node_model.evaluate
             input_keys = input_keys + [str(key) for key in node_model.inputs]
         else:
             model = node_model
+        # Remove duplicate keys
         mfd_input_keys = Key.convert_list(list(set(mfd_input_keys)))
         input_keys = Key.convert_list(list(set(input_keys)))
-        evaluate = cls(model, derivatives, dx=dx, order=order,
-            max_batch_size=max_batch_size, double_cast=double_cast,
-            input_keys=input_keys)
-        derivative_node = Node(mfd_input_keys, derivatives, evaluate, name=
-            'Meshless-Finite-Derivative Node' + '' if name is None else
-            f': {name}')
+
+        evaluate = cls(
+            model,
+            derivatives,
+            dx=dx,
+            order=order,
+            max_batch_size=max_batch_size,
+            double_cast=double_cast,
+            input_keys=input_keys,
+        )
+
+        derivative_node = Node(
+            mfd_input_keys,
+            derivatives,
+            evaluate,
+            name=(
+                "Meshless-Finite-Derivative Node" + "" if name is None else f": {name}"
+            ),
+        )
         return derivative_node

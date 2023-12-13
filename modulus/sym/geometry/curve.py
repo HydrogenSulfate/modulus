@@ -1,12 +1,30 @@
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Defines different Curve objects
 """
+
 import types
 import numpy as np
 import sympy
 import symengine
 from chaospy.distributions.sampler.sequences.primes import create_primes
-from chaospy.distributions.sampler.sequences.van_der_corput import create_van_der_corput_samples as create_samples
+from chaospy.distributions.sampler.sequences.van_der_corput import (
+    create_van_der_corput_samples as create_samples,
+)
+
 from modulus.sym.utils.sympy import np_lambdify
 from .parameterization import Parameterization, Parameter
 from .helper import _sympy_func_to_func
@@ -18,46 +36,70 @@ class Curve:
     """
 
     def __init__(self, sample, dims, parameterization=Parameterization()):
+        # store attributes
         self._sample = sample
         self._dims = dims
         self.parameterization = parameterization
 
-    def sample(self, nr_points, criteria=None, parameterization=None,
-        quasirandom=False):
+    def sample(
+        self, nr_points, criteria=None, parameterization=None, quasirandom=False
+    ):
+        # use internal parameterization if not given
         if parameterization is None:
             parameterization = self.parameterization
-        invar = {key: np.empty((0, 1)) for key in self.dims + [('normal_' +
-            x) for x in self.dims] + ['area']}
+
+        # continually sample points throwing out points that don't satisfy criteria
+        invar = {
+            key: np.empty((0, 1))
+            for key in self.dims + ["normal_" + x for x in self.dims] + ["area"]
+        }
         params = {key: np.empty((0, 1)) for key in parameterization.parameters}
         total_sampled = 0
         total_tried = 0
         nr_try = 0
         while True:
-            local_invar, local_params = self._sample(nr_points,
-                parameterization, quasirandom)
+            # sample curve
+            local_invar, local_params = self._sample(
+                nr_points, parameterization, quasirandom
+            )
+
+            # compute given criteria and remove points
             if criteria is not None:
                 computed_criteria = criteria(local_invar, local_params)
-                local_invar = {key: value[computed_criteria[:, 0], :] for 
-                    key, value in local_invar.items()}
-                local_params = {key: value[computed_criteria[:, 0], :] for 
-                    key, value in local_params.items()}
+                local_invar = {
+                    key: value[computed_criteria[:, 0], :]
+                    for key, value in local_invar.items()
+                }
+                local_params = {
+                    key: value[computed_criteria[:, 0], :]
+                    for key, value in local_params.items()
+                }
+
+            # store invar
             for key in local_invar.keys():
-                invar[key] = np.concatenate([invar[key], local_invar[key]],
-                    axis=0)
+                invar[key] = np.concatenate([invar[key], local_invar[key]], axis=0)
+
+            # store params
             for key in local_params.keys():
-                params[key] = np.concatenate([params[key], local_params[key
-                    ]], axis=0)
+                params[key] = np.concatenate([params[key], local_params[key]], axis=0)
+
+            # keep track of sampling
             total_sampled = next(iter(invar.values())).shape[0]
             total_tried += nr_points
             nr_try += 1
+
+            # break when finished sampling
             if total_sampled >= nr_points:
                 for key, value in invar.items():
                     invar[key] = value[:nr_points]
                 for key, value in params.items():
                     params[key] = value[:nr_points]
                 break
+
+            # check if couldn't sample
             if nr_try > 1000 and total_sampled < 1:
-                raise Exception('Unable to sample curve')
+                raise Exception("Unable to sample curve")
+
         return invar, params
 
     @property
@@ -68,10 +110,15 @@ class Curve:
         dims : list of strings
           output can be ['x'], ['x','y'], or ['x','y','z']
         """
-        return ['x', 'y', 'z'][:self._dims]
+        return ["x", "y", "z"][: self._dims]
 
-    def approx_area(self, parameterization=Parameterization(), criteria=
-        None, approx_nr=10000, quasirandom=False):
+    def approx_area(
+        self,
+        parameterization=Parameterization(),
+        criteria=None,
+        approx_nr=10000,
+        quasirandom=False,
+    ):
         """
         Parameters
         ----------
@@ -92,10 +139,14 @@ class Curve:
         area : float
           area of curve
         """
-        s, p = self._sample(nr_points=approx_nr, parameterization=
-            parameterization, quasirandom=quasirandom)
+
+        s, p = self._sample(
+            nr_points=approx_nr,
+            parameterization=parameterization,
+            quasirandom=quasirandom,
+        )
         computed_criteria = criteria(s, p)
-        total_area = np.sum(s['area'][computed_criteria[:, 0], :])
+        total_area = np.sum(s["area"][computed_criteria[:, 0], :])
         return total_area
 
     def scale(self, x, parameterization=Parameterization()):
@@ -114,24 +165,36 @@ class Curve:
             elif isinstance(x, sympy.Basic):
                 x = _sympy_func_to_func(x)
             else:
-                raise TypeError('Scaling by type ' + str(type(x)) +
-                    'is not supported')
+                raise TypeError("Scaling by type " + str(type(x)) + "is not supported")
 
-            def sample(nr_points, parameterization=Parameterization(),
-                quasirandom=False):
-                invar, params = internal_sample(nr_points, parameterization,
-                    quasirandom)
+            def sample(
+                nr_points, parameterization=Parameterization(), quasirandom=False
+            ):
+                # sample points
+                invar, params = internal_sample(
+                    nr_points, parameterization, quasirandom
+                )
+
+                # compute scale if needed
                 if isinstance(x, (float, int)):
                     computed_scale = x
                 else:
                     computed_scale = s(params)
+
+                # scale invar
                 for d in dims:
                     invar[d] *= x
-                invar['area'] *= x ** (len(dims) - 1)
+                invar["area"] *= x ** (len(dims) - 1)
+
                 return invar, params
+
             return sample
-        return Curve(_sample(self._sample, self.dims, x), len(self.dims),
-            self.parameterization.union(parameterization))
+
+        return Curve(
+            _sample(self._sample, self.dims, x),
+            len(self.dims),
+            self.parameterization.union(parameterization),
+        )
 
     def translate(self, xyz, parameterization=Parameterization()):
         """
@@ -151,25 +214,38 @@ class Curve:
                 elif isinstance(x, sympy.Basic):
                     compiled_xyz.append(_sympy_func_to_func(x))
                 else:
-                    raise TypeError('Translate by type ' + str(type(x)) +
-                        'is not supported')
+                    raise TypeError(
+                        "Translate by type " + str(type(x)) + "is not supported"
+                    )
 
-            def sample(nr_points, parameterization=Parameterization(),
-                quasirandom=False):
-                invar, params = internal_sample(nr_points, parameterization,
-                    quasirandom)
+            def sample(
+                nr_points, parameterization=Parameterization(), quasirandom=False
+            ):
+                # sample points
+                invar, params = internal_sample(
+                    nr_points, parameterization, quasirandom
+                )
+
+                # compute translation if needed
                 computed_translation = []
                 for x in compiled_xyz:
                     if isinstance(x, (float, int)):
                         computed_translation.append(x)
                     else:
                         computed_translation.append(x(params))
+
+                # translate invar
                 for d, x in zip(dims, computed_translation):
                     invar[d] += x
                 return invar, params
+
             return sample
-        return Curve(_sample(self._sample, self.dims, xyz), len(self.dims),
-            self.parameterization.union(parameterization))
+
+        return Curve(
+            _sample(self._sample, self.dims, xyz),
+            len(self.dims),
+            self.parameterization.union(parameterization),
+        )
 
     def rotate(self, angle, axis, parameterization=Parameterization()):
         """
@@ -187,52 +263,69 @@ class Curve:
             elif isinstance(angle, sympy.Basic):
                 angle = _sympy_func_to_func(angle)
             else:
-                raise TypeError('Scaling by type ' + str(type(angle)) +
-                    'is not supported')
+                raise TypeError(
+                    "Scaling by type " + str(type(angle)) + "is not supported"
+                )
 
-            def sample(nr_points, parameterization=Parameterization(),
-                quasirandom=False):
-                invar, params = internal_sample(nr_points, parameterization,
-                    quasirandom)
+            def sample(
+                nr_points, parameterization=Parameterization(), quasirandom=False
+            ):
+                # sample points
+                invar, params = internal_sample(
+                    nr_points, parameterization, quasirandom
+                )
+
+                # compute translation if needed
                 if isinstance(angle, (float, int)):
                     computed_angle = angle
                 else:
                     computed_angle = angle(params)
+
+                # angle invar
                 rotated_invar = {**invar}
                 rotated_dims = [key for key in self.dims if key != axis]
-                rotated_invar[rotated_dims[0]] = np.cos(computed_angle
-                    ) * invar[rotated_dims[0]] - np.sin(computed_angle
-                    ) * invar[rotated_dims[1]]
-                rotated_invar['normal_' + rotated_dims[0]] = np.cos(
-                    computed_angle) * invar['normal_' + rotated_dims[0]
-                    ] - np.sin(computed_angle) * invar['normal_' +
-                    rotated_dims[1]]
-                rotated_invar[rotated_dims[1]] = np.sin(computed_angle
-                    ) * invar[rotated_dims[0]] + np.cos(computed_angle
-                    ) * invar[rotated_dims[1]]
-                rotated_invar['normal_' + rotated_dims[1]] = np.sin(
-                    computed_angle) * invar['normal_' + rotated_dims[0]
-                    ] + np.cos(computed_angle) * invar['normal_' +
-                    rotated_dims[1]]
+                rotated_invar[rotated_dims[0]] = (
+                    np.cos(computed_angle) * invar[rotated_dims[0]]
+                    - np.sin(computed_angle) * invar[rotated_dims[1]]
+                )
+                rotated_invar["normal_" + rotated_dims[0]] = (
+                    np.cos(computed_angle) * invar["normal_" + rotated_dims[0]]
+                    - np.sin(computed_angle) * invar["normal_" + rotated_dims[1]]
+                )
+                rotated_invar[rotated_dims[1]] = (
+                    np.sin(computed_angle) * invar[rotated_dims[0]]
+                    + np.cos(computed_angle) * invar[rotated_dims[1]]
+                )
+                rotated_invar["normal_" + rotated_dims[1]] = (
+                    np.sin(computed_angle) * invar["normal_" + rotated_dims[0]]
+                    + np.cos(computed_angle) * invar["normal_" + rotated_dims[1]]
+                )
+
                 return rotated_invar, params
+
             return sample
-        return Curve(_sample(self._sample, self.dims, angle, axis), len(
-            self.dims), self.parameterization.union(parameterization))
+
+        return Curve(
+            _sample(self._sample, self.dims, angle, axis),
+            len(self.dims),
+            self.parameterization.union(parameterization),
+        )
 
     def invert_normal(self):
-
         def _sample(internal_sample, dims):
-
-            def sample(nr_points, parameterization=Parameterization(),
-                quasirandom=False):
-                s, p = internal_sample(nr_points, parameterization, quasirandom
-                    )
+            def sample(
+                nr_points, parameterization=Parameterization(), quasirandom=False
+            ):
+                s, p = internal_sample(nr_points, parameterization, quasirandom)
                 for d in dims:
-                    s['normal_' + d] = -s['normal_' + d]
+                    s["normal_" + d] = -s["normal_" + d]
                 return s, p
+
             return sample
-        return Curve(_sample(self._sample, self.dims), len(self.dims), self
-            .parameterization)
+
+        return Curve(
+            _sample(self._sample, self.dims), len(self.dims), self.parameterization
+        )
 
 
 class SympyCurve(Curve):
@@ -245,9 +338,9 @@ class SympyCurve(Curve):
         circle might have::
 
             functions = {'x': cos(theta),
-            	'y': sin(theta),
-            	'normal_x': cos(theta),
-            	'normal_y': sin(theta)}
+            \t'y': sin(theta),
+            \t'normal_x': cos(theta),
+            \t'normal_y': sin(theta)}
 
         TODO: refactor to remove normals.
     ranges : dictionary of Sympy Symbols and ranges
@@ -262,6 +355,8 @@ class SympyCurve(Curve):
     """
 
     def __init__(self, functions, parameterization, area, criteria=None):
+
+        # lambdify functions
         lambdify_functions = {}
         for key, func in functions.items():
             try:
@@ -273,8 +368,9 @@ class SympyCurve(Curve):
             elif isinstance(func, (sympy.Basic, symengine.Basic, Parameter)):
                 lambdify_functions[key] = _sympy_func_to_func(func)
             else:
-                raise TypeError('function type not supported: ' + str(type(
-                    func)))
+                raise TypeError("function type not supported: " + str(type(func)))
+
+        # lambdify area function
         try:
             area = float(area)
         except:
@@ -284,65 +380,107 @@ class SympyCurve(Curve):
         elif isinstance(area, (sympy.Basic, symengine.Basic, Parameter)):
             area_fn = _sympy_func_to_func(area)
         else:
-            raise TypeError('area type not supported: ' + str(type(area)))
-        lambdify_functions['area'] = area_fn
+            raise TypeError("area type not supported: " + str(type(area)))
+        lambdify_functions["area"] = area_fn
+
+        # lambdify criteria function
         if criteria is not None:
             criteria = _sympy_func_to_func(criteria)
 
+        # create closure for sample function
         def _sample(lambdify_functions, criteria, internal_parameterization):
+            def sample(
+                nr_points, parameterization=Parameterization(), quasirandom=False
+            ):
 
-            def sample(nr_points, parameterization=Parameterization(),
-                quasirandom=False):
+                # use internal parameterization if not given
                 i_parameterization = internal_parameterization.copy()
                 for key, value in parameterization.param_ranges.items():
                     i_parameterization.param_ranges[key] = value
-                invar = {str(key): np.empty((0, 1)) for key in
-                    lambdify_functions.keys()}
-                params = {str(key): np.empty((0, 1)) for key in
-                    parameterization.param_ranges.keys()}
+
+                # continually sample points throwing out points that don't satisfy criteria
+                invar = {
+                    str(key): np.empty((0, 1)) for key in lambdify_functions.keys()
+                }
+                params = {
+                    str(key): np.empty((0, 1))
+                    for key in parameterization.param_ranges.keys()
+                }
                 total_sampled = 0
                 total_tried = 0
                 nr_try = 0
                 while True:
-                    local_params = i_parameterization.sample(nr_points,
-                        quasirandom)
+                    # sample parameter ranges
+                    local_params = i_parameterization.sample(nr_points, quasirandom)
+
+                    # compute curve points from functions
                     local_invar = {}
                     for key, func in lambdify_functions.items():
                         if isinstance(func, (float, int)):
-                            local_invar[key] = np.full_like(next(iter(
-                                local_params.values())), func)
+                            local_invar[key] = np.full_like(
+                                next(iter(local_params.values())), func
+                            )
                         else:
                             local_invar[key] = func(local_params)
-                    local_invar['area'] /= next(iter(local_params.values())
-                        ).shape[0]
+                    local_invar["area"] /= next(iter(local_params.values())).shape[0]
+
+                    # remove points that don't satisfy curve criteria if needed
                     if criteria is not None:
+                        # compute curve criteria
                         computed_criteria = criteria(local_params).astype(bool)
-                        local_invar = {key: value[computed_criteria[:, 0],
-                            :] for key, value in local_invar.items()}
-                        local_params = {key: value[computed_criteria[:, 0],
-                            :] for key, value in local_params.items()}
+
+                        # remove elements points based on curve criteria
+                        local_invar = {
+                            key: value[computed_criteria[:, 0], :]
+                            for key, value in local_invar.items()
+                        }
+                        local_params = {
+                            key: value[computed_criteria[:, 0], :]
+                            for key, value in local_params.items()
+                        }
+
+                    # only store external parameters
                     for key in list(local_params.keys()):
                         if key not in parameterization.parameters:
                             local_params.pop(key)
+
+                    # store invar
                     for key in local_invar.keys():
-                        invar[key] = np.concatenate([invar[key],
-                            local_invar[key]], axis=0)
+                        invar[key] = np.concatenate(
+                            [invar[key], local_invar[key]], axis=0
+                        )
+
+                    # store params
                     for key in local_params.keys():
-                        params[key] = np.concatenate([params[key],
-                            local_params[key]], axis=0)
+                        params[key] = np.concatenate(
+                            [params[key], local_params[key]], axis=0
+                        )
+
+                    # keep track of sampling
                     total_sampled = next(iter(invar.values())).shape[0]
                     total_tried += next(iter(local_invar.values())).shape[0]
                     nr_try += 1
+
+                    # break when finished sampling
                     if total_sampled >= nr_points:
                         for key, value in invar.items():
                             invar[key] = value[:nr_points]
                         for key, value in params.items():
                             params[key] = value[:nr_points]
                         break
+
+                    # check if couldn't sample
                     if nr_try > 10000 and total_sampled < 1:
-                        raise Exception('Unable to sample curve')
+                        raise Exception("Unable to sample curve")
+
                 return invar, params
+
             return sample
-        Curve.__init__(self, _sample(lambdify_functions, criteria,
-            parameterization), len(functions) // 2, parameterization=
-            parameterization)
+
+        # initialize curve
+        Curve.__init__(
+            self,
+            _sample(lambdify_functions, criteria, parameterization),
+            len(functions) // 2,
+            parameterization=parameterization,
+        )

@@ -1,0 +1,18 @@
+{
+  "copyright_file": "copyright.txt",
+  "dir": "../../",
+  "exclude-dir": [
+      "../../build/",
+      "../../docs/",
+      "../../deps/",
+      "../../examples/",
+      "../../modulus/sym/utils_aux"
+    ],
+  "include-ext": [
+      ".py",
+      ".yaml",
+      ".ci",
+      ".release",
+      "Dockerfile"
+  ]
+}

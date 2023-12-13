@@ -1,6 +1,22 @@
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Basic equations
 """
+
 from sympy import Symbol, Function, Number
+
 from modulus.sym.eq.pde import PDE
 from modulus.sym.node import Node
 
@@ -14,14 +30,18 @@ class NormalDotVec(PDE):
     dim : int
         Dimension of the equations (1, 2, or 3). Default is 3.
     """
-    name = 'NormalDotVec'
 
-    def __init__(self, vec=['u', 'v', 'w']):
-        normal = [Symbol('normal_x'), Symbol('normal_y'), Symbol('normal_z')]
+    name = "NormalDotVec"
+
+    def __init__(self, vec=["u", "v", "w"]):
+        # normal
+        normal = [Symbol("normal_x"), Symbol("normal_y"), Symbol("normal_z")]
+
+        # make input variables
         self.equations = {}
-        self.equations['normal_dot_vel'] = 0
+        self.equations["normal_dot_vel"] = 0
         for v, n in zip(vec, normal):
-            self.equations['normal_dot_vel'] += Symbol(v) * n
+            self.equations["normal_dot_vel"] += Symbol(v) * n
 
 
 class GradNormal(PDE):
@@ -43,30 +63,41 @@ class GradNormal(PDE):
     >>> gn.pprint()
       normal_gradient_T: normal_x*T__x + normal_y*T__y + normal_z*T__z
     """
-    name = 'GradNormal'
+
+    name = "GradNormal"
 
     def __init__(self, T, dim=3, time=True):
         self.T = T
         self.dim = dim
         self.time = time
-        x, y, z = Symbol('x'), Symbol('y'), Symbol('z')
-        normal_x = Symbol('normal_x')
-        normal_y = Symbol('normal_y')
-        normal_z = Symbol('normal_z')
-        t = Symbol('t')
-        input_variables = {'x': x, 'y': y, 'z': z, 't': t}
+
+        # coordinates
+        x, y, z = Symbol("x"), Symbol("y"), Symbol("z")
+        normal_x = Symbol("normal_x")
+        normal_y = Symbol("normal_y")
+        normal_z = Symbol("normal_z")
+
+        # time
+        t = Symbol("t")
+
+        # make input variables
+        input_variables = {"x": x, "y": y, "z": z, "t": t}
         if self.dim == 1:
-            input_variables.pop('y')
-            input_variables.pop('z')
+            input_variables.pop("y")
+            input_variables.pop("z")
         elif self.dim == 2:
-            input_variables.pop('z')
+            input_variables.pop("z")
         if not self.time:
-            input_variables.pop('t')
+            input_variables.pop("t")
+
+        # variables to set the gradients (example Temperature)
         T = Function(T)(*input_variables)
+
+        # set equations
         self.equations = {}
-        """Class Method: *.diff, can not convert, please check whether it is torch.Tensor.*/Optimizer.*/nn.Module.*/torch.distributions.Distribution.*/torch.autograd.function.FunctionCtx.*/torch.profiler.profile.*/torch.autograd.profiler.profile.*, and convert manually"""
-        self.equations['normal_gradient_' + self.T] = normal_x * T.diff(x
-            ) + normal_y * T.diff(y) + normal_z * T.diff(z)
+        self.equations["normal_gradient_" + self.T] = (
+            normal_x * T.diff(x) + normal_y * T.diff(y) + normal_z * T.diff(z)
+        )
 
 
 class Curl(PDE):
@@ -88,14 +119,22 @@ class Curl(PDE):
       v: -phi__x
       w: 0
     """
-    name = 'Curl'
 
-    def __init__(self, vector, curl_name=['u', 'v', 'w']):
-        x, y, z = Symbol('x'), Symbol('y'), Symbol('z')
-        input_variables = {'x': x, 'y': y, 'z': z}
+    name = "Curl"
+
+    def __init__(self, vector, curl_name=["u", "v", "w"]):
+        # coordinates
+        x, y, z = Symbol("x"), Symbol("y"), Symbol("z")
+
+        # make input variables
+        input_variables = {"x": x, "y": y, "z": z}
+
+        # vector
         v_0 = vector[0]
         v_1 = vector[1]
         v_2 = vector[2]
+
+        # make funtions
         if type(v_0) is str:
             v_0 = Function(v_0)(*input_variables)
         elif type(v_0) in [float, int]:
@@ -108,12 +147,13 @@ class Curl(PDE):
             v_2 = Function(v_2)(*input_variables)
         elif type(v_2) in [float, int]:
             v_2 = Number(v_2)
-        """Class Method: *.diff, can not convert, please check whether it is torch.Tensor.*/Optimizer.*/nn.Module.*/torch.distributions.Distribution.*/torch.autograd.function.FunctionCtx.*/torch.profiler.profile.*/torch.autograd.profiler.profile.*, and convert manually"""
+
+        # curl
         curl_0 = v_2.diff(y) - v_1.diff(z)
-        """Class Method: *.diff, can not convert, please check whether it is torch.Tensor.*/Optimizer.*/nn.Module.*/torch.distributions.Distribution.*/torch.autograd.function.FunctionCtx.*/torch.profiler.profile.*/torch.autograd.profiler.profile.*, and convert manually"""
         curl_1 = v_0.diff(z) - v_2.diff(x)
-        """Class Method: *.diff, can not convert, please check whether it is torch.Tensor.*/Optimizer.*/nn.Module.*/torch.distributions.Distribution.*/torch.autograd.function.FunctionCtx.*/torch.profiler.profile.*/torch.autograd.profiler.profile.*, and convert manually"""
         curl_2 = v_1.diff(x) - v_0.diff(y)
+
+        # set equations
         self.equations = {}
         self.equations[curl_name[0]] = curl_0
         self.equations[curl_name[1]] = curl_1

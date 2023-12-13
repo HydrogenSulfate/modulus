@@ -1,7 +1,23 @@
-import paddle
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """
 Supported optimizer configs
 """
+
+import paddle
+
 from dataclasses import dataclass, field
 from hydra.core.config_store import ConfigStore
 from typing import List, Any
@@ -11,26 +27,29 @@ from omegaconf import MISSING
 @dataclass
 class OptimizerConf:
     _target_ = MISSING
-    _params_: Any = field(default_factory=lambda : {'compute_gradients':
-        'adam_compute_gradients', 'apply_gradients': 'adam_apply_gradients'})
+    _params_: Any = field(
+        default_factory=lambda: {
+            "compute_gradients": "adam_compute_gradients",
+            "apply_gradients": "adam_apply_gradients",
+        }
+    )
 
 
 @dataclass
 class AdamConf(OptimizerConf):
-    _target_: str = 'paddle.optimizer.Adam'
-    learning_rate: float = 0.001
+    _target_: str = "paddle.optimizer.Adam"
+    learning_rate: Any = 1.0e-3
     beta1: float = 0.9
     beta2: float = 0.999
     epsilon: float = 1e-08
     weight_decay: float = 0
-    # amsgrad: bool = False
 
 
 @dataclass
 class SGDConf(OptimizerConf):
-    _target_: str = 'paddle.optimizer.SGD'
-    learning_rate: float = 0.001
-    momentum: float = 0.01
+    _target_: str = "paddle.optimizer.SGD"
+    learning_rate: float = 1.0e-3
+    momentum: float = 1.0e-2
     dampening: float = 0
     weight_decay: float = 0
     nesterov: bool = False
@@ -38,44 +57,51 @@ class SGDConf(OptimizerConf):
 
 @dataclass
 class AdahessianConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.Adahessian'
-    learning_rate: float = 0.1
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
-    epsilon: float = 0.0001
+    _target_: str = "torch_optimizer.Adahessian"
+    learning_rate: float = 1.0e-1
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
+    epsilon: float = 1e-4
     weight_decay: float = 0.0
     hessian_power: float = 1.0
-    _params_: Any = field(default_factory=lambda : {'compute_gradients':
-        'adahess_compute_gradients', 'apply_gradients':
-        'adahess_apply_gradients'})
+    _params_: Any = field(
+        default_factory=lambda: {
+            "compute_gradients": "adahess_compute_gradients",
+            "apply_gradients": "adahess_apply_gradients",
+        }
+    )
 
 
 @dataclass
 class BFGSConf(OptimizerConf):
-    _target_: str = 'paddle.optimizer.LBFGS'
+    _target_: str = "paddle.optimizer.LBFGS"
     learning_rate: float = 1.0
     max_iter: int = 1000
     max_eval: Any = None
-    tolerance_grad: float = 1e-07
-    tolerance_change: float = 1e-09
+    tolerance_grad: float = 1e-7
+    tolerance_change: float = 1e-9
     history_size: int = 100
-    line_search_fn: Any = None
-    _params_: Any = field(default_factory=lambda : {'compute_gradients':
-        'bfgs_compute_gradients', 'apply_gradients': 'bfgs_apply_gradients'})
+    line_search_fn: Any = None  # Union[None, str]
+    _params_: Any = field(
+        default_factory=lambda: {
+            "compute_gradients": "bfgs_compute_gradients",
+            "apply_gradients": "bfgs_apply_gradients",
+        }
+    )
 
 
 @dataclass
 class AdadeltaConf(OptimizerConf):
-    _target_: str = 'paddle.optimizer.Adadelta'
+    _target_: str = "paddle.optimizer.Adadelta"
     learning_rate: float = 1.0
     rho: float = 0.9
-    epsilon: float = 1e-06
+    epsilon: float = 1e-6
     weight_decay: float = 0
 
 
 @dataclass
 class AdagradConf(OptimizerConf):
-    _target_: str = 'paddle.optimizer.Adagrad'
-    learning_rate: float = 0.01
+    _target_: str = "paddle.optimizer.Adagrad"
+    learning_rate: float = 1.0e-2
     lr_decay: float = 0
     weight_decay: float = 0
     initial_accumulator_value: float = 0
@@ -84,36 +110,36 @@ class AdagradConf(OptimizerConf):
 
 @dataclass
 class AdamWConf(OptimizerConf):
-    _target_: str = 'paddle.optimizer.AdamW'
-    learning_rate: float = 0.001
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
-    epsilon: float = 1e-08
+    _target_: str = "paddle.optimizer.AdamW"
+    learning_rate: float = 1.0e-3
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
+    epsilon: float = 1e-8
     weight_decay: float = 0.01
     amsgrad: bool = False
 
 
 @dataclass
 class SparseAdamConf(OptimizerConf):
-    _target_: str = 'paddle.optimizer.SparseAdam'
-    learning_rate: float = 0.001
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
-    epsilon: float = 1e-08
+    _target_: str = "paddle.optimizer.SparseAdam"
+    learning_rate: float = 1.0e-3
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
+    epsilon: float = 1e-8
 
 
 @dataclass
 class AdamaxConf(OptimizerConf):
-    _target_: str = 'paddle.optimizer.Adamax'
-    learning_rate: float = 0.002
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
-    epsilon: float = 1e-08
+    _target_: str = "paddle.optimizer.Adamax"
+    learning_rate: float = 2.0e-3
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
+    epsilon: float = 1e-8
     weight_decay: float = 0
 
 
 @dataclass
 class ASGDConf(OptimizerConf):
-    _target_: str = 'paddle.optimizer.ASGD'
-    learning_rate: float = 0.01
-    lambd: float = 0.0001
+    _target_: str = "paddle.optimizer.ASGD"
+    learning_rate: float = 1.0e-2
+    lambd: float = 1.0e-4
     alpha: float = 0.75
     t0: float = 1000000.0
     weight_decay: float = 0
@@ -121,29 +147,29 @@ class ASGDConf(OptimizerConf):
 
 @dataclass
 class NAdamConf(OptimizerConf):
-    _target_: str = 'paddle.optimizer.NAdam'
-    learning_rate: float = 0.002
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
-    epsilon: float = 1e-08
+    _target_: str = "paddle.optimizer.NAdam"
+    learning_rate: float = 2.0e-3
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
+    epsilon: float = 1e-8
     weight_decay: float = 0
     momentum_decay: float = 0.004
 
 
 @dataclass
 class RAdamConf(OptimizerConf):
-    _target_: str = 'paddle.optimizer.RAdam'
-    learning_rate: float = 0.001
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
-    epsilon: float = 1e-08
+    _target_: str = "paddle.optimizer.RAdam"
+    learning_rate: float = 1.0e-3
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
+    epsilon: float = 1e-8
     weight_decay: float = 0
 
 
 @dataclass
 class RMSpropConf(OptimizerConf):
-    _target_: str = 'paddle.optimizer.RMSprop'
-    learning_rate: float = 0.01
+    _target_: str = "paddle.optimizer.RMSprop"
+    learning_rate: float = 1.0e-2
     alpha: float = 0.99
-    epsilon: float = 1e-08
+    epsilon: float = 1e-8
     weight_decay: float = 0
     momentum: float = 0
     centered: bool = False
@@ -151,40 +177,40 @@ class RMSpropConf(OptimizerConf):
 
 @dataclass
 class RpropConf(OptimizerConf):
-    _target_: str = 'paddle.optimizer.Rprop'
-    learning_rate: float = 0.01
-    etas: List[float] = field(default_factory=lambda : [0.5, 1.2])
-    step_sizes: List[float] = field(default_factory=lambda : [1e-06, 50])
+    _target_: str = "paddle.optimizer.Rprop"
+    learning_rate: float = 1.0e-2
+    etas: List[float] = field(default_factory=lambda: [0.5, 1.2])
+    step_sizes: List[float] = field(default_factory=lambda: [1.0e-6, 50])
 
 
 @dataclass
 class A2GradExpConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.A2GradExp'
-    learning_rate: float = 0.01
+    _target_: str = "torch_optimizer.A2GradExp"
+    learning_rate: float = 1e-2
     beta: float = 10.0
     lips: float = 10.0
 
 
 @dataclass
 class A2GradIncConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.A2GradInc'
-    learning_rate: float = 0.01
+    _target_: str = "torch_optimizer.A2GradInc"
+    learning_rate: float = 1e-2
     beta: float = 10.0
     lips: float = 10.0
 
 
 @dataclass
 class A2GradUniConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.A2GradUni'
-    learning_rate: float = 0.01
+    _target_: str = "torch_optimizer.A2GradUni"
+    learning_rate: float = 1e-2
     beta: float = 10.0
     lips: float = 10.0
 
 
 @dataclass
 class AccSGDConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.AccSGD'
-    learning_rate: float = 0.001
+    _target_: str = "torch_optimizer.AccSGD"
+    learning_rate: float = 1.0e-3
     kappa: float = 1000.0
     xi: float = 10.0
     small_const: float = 0.7
@@ -193,10 +219,10 @@ class AccSGDConf(OptimizerConf):
 
 @dataclass
 class AdaBeliefConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.AdaBelief'
-    learning_rate: float = 0.001
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
-    epsilon: float = 0.001
+    _target_: str = "torch_optimizer.AdaBelief"
+    learning_rate: float = 1.0e-3
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
+    epsilon: float = 1.0e-3
     weight_decay: float = 0
     amsgrad: bool = False
     weight_decouple: bool = False
@@ -206,31 +232,31 @@ class AdaBeliefConf(OptimizerConf):
 
 @dataclass
 class AdaBoundConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.AdaBound'
-    learning_rate: float = 0.001
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
+    _target_: str = "torch_optimizer.AdaBound"
+    learning_rate: float = 1.0e-3
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
     final_learning_rate: float = 0.1
-    gamma: float = 0.001
-    epsilon: float = 1e-08
+    gamma: float = 1e-3
+    epsilon: float = 1e-8
     weight_decay: float = 0
     amsbound: bool = False
 
 
 @dataclass
 class AdaModConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.AdaMod'
-    learning_rate: float = 0.001
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
+    _target_: str = "torch_optimizer.AdaMod"
+    learning_rate: float = 1.0e-3
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
     beta3: float = 0.999
-    epsilon: float = 1e-08
+    epsilon: float = 1e-8
     weight_decay: float = 0
 
 
 @dataclass
 class AdafactorConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.Adafactor'
-    learning_rate: float = 0.001
-    eps2: List[float] = field(default_factory=lambda : [1e-30, 0.001])
+    _target_: str = "torch_optimizer.Adafactor"
+    learning_rate: float = 1.0e-3
+    eps2: List[float] = field(default_factory=lambda: [1e-30, 1e-3])
     clip_threshold: float = 1.0
     decay_rate: float = -0.8
     beta1: Any = None
@@ -242,10 +268,10 @@ class AdafactorConf(OptimizerConf):
 
 @dataclass
 class AdamPConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.AdamP'
-    learning_rate: float = 0.001
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
-    epsilon: float = 1e-08
+    _target_: str = "torch_optimizer.AdamP"
+    learning_rate: float = 1.0e-3
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
+    epsilon: float = 1e-8
     weight_decay: float = 0
     delta: float = 0.1
     wd_ratio: float = 0.1
@@ -253,18 +279,18 @@ class AdamPConf(OptimizerConf):
 
 @dataclass
 class AggMoConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.AggMo'
-    learning_rate: float = 0.001
-    betas: List[float] = field(default_factory=lambda : [0.0, 0.9, 0.99])
+    _target_: str = "torch_optimizer.AggMo"
+    learning_rate: float = 1.0e-3
+    betas: List[float] = field(default_factory=lambda: [0.0, 0.9, 0.99])
     weight_decay: float = 0
 
 
 @dataclass
 class ApolloConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.Apollo'
-    learning_rate: float = 0.01
+    _target_: str = "torch_optimizer.Apollo"
+    learning_rate: float = 1.0e-2
     beta: float = 0.9
-    epsilon: float = 0.0001
+    epsilon: float = 1e-4
     warmup: int = 0
     init_learning_rate: float = 0.01
     weight_decay: float = 0
@@ -272,37 +298,37 @@ class ApolloConf(OptimizerConf):
 
 @dataclass
 class DiffGradConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.DiffGrad'
-    learning_rate: float = 0.001
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
-    epsilon: float = 1e-08
+    _target_: str = "torch_optimizer.DiffGrad"
+    learning_rate: float = 1.0e-3
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
+    epsilon: float = 1e-8
     weight_decay: float = 0
 
 
 @dataclass
 class LambConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.Lamb'
-    learning_rate: float = 0.001
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
-    epsilon: float = 1e-08
+    _target_: str = "torch_optimizer.Lamb"
+    learning_rate: float = 1.0e-3
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
+    epsilon: float = 1e-8
     weight_decay: float = 0
 
 
 @dataclass
 class MADGRADConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.MADGRAD'
-    learning_rate: float = 0.01
+    _target_: str = "torch_optimizer.MADGRAD"
+    learning_rate: float = 1.0e-2
     momentum: float = 0.9
     weight_decay: float = 0
-    epsilon: float = 1e-06
+    epsilon: float = 1e-6
 
 
 @dataclass
 class NovoGradConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.NovoGrad'
-    learning_rate: float = 0.001
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
-    epsilon: float = 1e-08
+    _target_: str = "torch_optimizer.NovoGrad"
+    learning_rate: float = 1.0e-3
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
+    epsilon: float = 1e-8
     weight_decay: float = 0
     grad_averaging: bool = False
     amsgrad: bool = False
@@ -310,84 +336,84 @@ class NovoGradConf(OptimizerConf):
 
 @dataclass
 class PIDConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.PID'
-    learning_rate: float = 0.001
+    _target_: str = "torch_optimizer.PID"
+    learning_rate: float = 1.0e-3
     momentum: float = 0
     dampening: float = 0
-    weight_decay: float = 0.01
+    weight_decay: float = 1e-2
     integral: float = 5.0
     derivative: float = 10.0
 
 
 @dataclass
 class QHAdamConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.QHAdam'
-    learning_rate: float = 0.001
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
-    nus: List[float] = field(default_factory=lambda : [1.0, 1.0])
+    _target_: str = "torch_optimizer.QHAdam"
+    learning_rate: float = 1.0e-3
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
+    nus: List[float] = field(default_factory=lambda: [1.0, 1.0])
     weight_decay: float = 0
     decouple_weight_decay: bool = False
-    epsilon: float = 1e-08
+    epsilon: float = 1e-8
 
 
 @dataclass
 class QHMConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.QHM'
-    learning_rate: float = 0.001
+    _target_: str = "torch_optimizer.QHM"
+    learning_rate: float = 1.0e-3
     momentum: float = 0
     nu: float = 0.7
-    weight_decay: float = 0.01
-    weight_decay_type: str = 'grad'
+    weight_decay: float = 1e-2
+    weight_decay_type: str = "grad"
 
 
 @dataclass
 class RangerConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.Ranger'
-    learning_rate: float = 0.001
+    _target_: str = "torch_optimizer.Ranger"
+    learning_rate: float = 1.0e-3
     alpha: float = 0.5
     k: int = 6
     N_sma_threshhold: int = 5
-    betas: List[float] = field(default_factory=lambda : [0.95, 0.999])
-    epsilon: float = 1e-05
+    betas: List[float] = field(default_factory=lambda: [0.95, 0.999])
+    epsilon: float = 1e-5
     weight_decay: float = 0
 
 
 @dataclass
 class RangerQHConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.RangerQH'
-    learning_rate: float = 0.001
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
-    nus: List[float] = field(default_factory=lambda : [0.7, 1.0])
+    _target_: str = "torch_optimizer.RangerQH"
+    learning_rate: float = 1.0e-3
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
+    nus: List[float] = field(default_factory=lambda: [0.7, 1.0])
     weight_decay: float = 0
     k: int = 6
     alpha: float = 0.5
     decouple_weight_decay: bool = False
-    epsilon: float = 1e-08
+    epsilon: float = 1e-8
 
 
 @dataclass
 class RangerVAConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.RangerVA'
-    learning_rate: float = 0.001
+    _target_: str = "torch_optimizer.RangerVA"
+    learning_rate: float = 1.0e-3
     alpha: float = 0.5
     k: int = 6
     n_sma_threshhold: int = 5
-    betas: List[float] = field(default_factory=lambda : [0.95, 0.999])
-    epsilon: float = 1e-05
+    betas: List[float] = field(default_factory=lambda: [0.95, 0.999])
+    epsilon: float = 1e-5
     weight_decay: float = 0
     amsgrad: bool = True
-    transformer: str = 'softplus'
+    transformer: str = "softplus"
     smooth: int = 50
-    grad_transformer: str = 'square'
+    grad_transformer: str = "square"
 
 
 @dataclass
 class SGDPConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.SGDP'
-    learning_rate: float = 0.001
+    _target_: str = "torch_optimizer.SGDP"
+    learning_rate: float = 1.0e-3
     momentum: float = 0
     dampening: float = 0
-    weight_decay: float = 0.01
+    weight_decay: float = 1e-2
     nesterov: bool = False
     delta: float = 0.1
     wd_ratio: float = 0.1
@@ -395,20 +421,20 @@ class SGDPConf(OptimizerConf):
 
 @dataclass
 class SGDWConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.SGDW'
-    learning_rate: float = 0.001
+    _target_: str = "torch_optimizer.SGDW"
+    learning_rate: float = 1.0e-3
     momentum: float = 0
     dampening: float = 0
-    weight_decay: float = 0.01
+    weight_decay: float = 1e-2
     nesterov: bool = False
 
 
 @dataclass
 class SWATSConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.SWATS'
-    learning_rate: float = 0.1
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
-    epsilon: float = 0.001
+    _target_: str = "torch_optimizer.SWATS"
+    learning_rate: float = 1.0e-1
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
+    epsilon: float = 1e-3
     weight_decay: float = 0
     amsgrad: bool = False
     nesterov: bool = False
@@ -416,63 +442,223 @@ class SWATSConf(OptimizerConf):
 
 @dataclass
 class ShampooConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.Shampoo'
-    learning_rate: float = 0.1
+    _target_: str = "torch_optimizer.Shampoo"
+    learning_rate: float = 1.0e-1
     momentum: float = 0
     weight_decay: float = 0
-    epsilon: float = 0.0001
+    epsilon: float = 1e-4
     update_freq: int = 1
 
 
 @dataclass
 class YogiConf(OptimizerConf):
-    _target_: str = 'torch_optimizer.Yogi'
-    learning_rate: float = 0.01
-    betas: List[float] = field(default_factory=lambda : [0.9, 0.999])
-    epsilon: float = 0.001
-    initial_accumulator: float = 1e-06
+    _target_: str = "torch_optimizer.Yogi"
+    learning_rate: float = 1.0e-2
+    betas: List[float] = field(default_factory=lambda: [0.9, 0.999])
+    epsilon: float = 1e-3
+    initial_accumulator: float = 1e-6
     weight_decay: float = 0
 
 
-def register_optimizer_configs() ->None:
+def register_optimizer_configs() -> None:
     cs = ConfigStore.instance()
-    cs.store(group='optimizer', name='adam', node=AdamConf)
-    cs.store(group='optimizer', name='sgd', node=SGDConf)
-    cs.store(group='optimizer', name='adahessian', node=AdahessianConf)
-    cs.store(group='optimizer', name='bfgs', node=BFGSConf)
-    cs.store(group='optimizer', name='adadelta', node=AdadeltaConf)
-    cs.store(group='optimizer', name='adagrad', node=AdagradConf)
-    cs.store(group='optimizer', name='adamw', node=AdamWConf)
-    cs.store(group='optimizer', name='sparse_adam', node=SparseAdamConf)
-    cs.store(group='optimizer', name='adamax', node=AdamaxConf)
-    cs.store(group='optimizer', name='asgd', node=ASGDConf)
-    cs.store(group='optimizer', name='nadam', node=NAdamConf)
-    cs.store(group='optimizer', name='radam', node=RAdamConf)
-    cs.store(group='optimizer', name='rmsprop', node=RMSpropConf)
-    cs.store(group='optimizer', name='rprop', node=RpropConf)
-    cs.store(group='optimizer', name='a2grad_exp', node=A2GradExpConf)
-    cs.store(group='optimizer', name='a2grad_inc', node=A2GradIncConf)
-    cs.store(group='optimizer', name='a2grad_uni', node=A2GradUniConf)
-    cs.store(group='optimizer', name='accsgd', node=AccSGDConf)
-    cs.store(group='optimizer', name='adabelief', node=AdaBeliefConf)
-    cs.store(group='optimizer', name='adabound', node=AdaBoundConf)
-    cs.store(group='optimizer', name='adamod', node=AdaModConf)
-    cs.store(group='optimizer', name='adafactor', node=AdafactorConf)
-    cs.store(group='optimizer', name='adamp', node=AdamPConf)
-    cs.store(group='optimizer', name='aggmo', node=AggMoConf)
-    cs.store(group='optimizer', name='apollo', node=ApolloConf)
-    cs.store(group='optimizer', name='diffgrad', node=DiffGradConf)
-    cs.store(group='optimizer', name='lamb', node=LambConf)
-    cs.store(group='optimizer', name='madgrad', node=MADGRADConf)
-    cs.store(group='optimizer', name='novograd', node=NovoGradConf)
-    cs.store(group='optimizer', name='pid', node=PIDConf)
-    cs.store(group='optimizer', name='qhadam', node=QHAdamConf)
-    cs.store(group='optimizer', name='qhm', node=QHMConf)
-    cs.store(group='optimizer', name='ranger', node=RangerConf)
-    cs.store(group='optimizer', name='ranger_qh', node=RangerQHConf)
-    cs.store(group='optimizer', name='ranger_va', node=RangerVAConf)
-    cs.store(group='optimizer', name='sgdp', node=SGDPConf)
-    cs.store(group='optimizer', name='sgdw', node=SGDWConf)
-    cs.store(group='optimizer', name='swats', node=SWATSConf)
-    cs.store(group='optimizer', name='shampoo', node=ShampooConf)
-    cs.store(group='optimizer', name='yogi', node=YogiConf)
+    cs.store(
+        group="optimizer",
+        name="adam",
+        node=AdamConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="sgd",
+        node=SGDConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="adahessian",
+        node=AdahessianConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="bfgs",
+        node=BFGSConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="adadelta",
+        node=AdadeltaConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="adagrad",
+        node=AdagradConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="adamw",
+        node=AdamWConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="sparse_adam",
+        node=SparseAdamConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="adamax",
+        node=AdamaxConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="asgd",
+        node=ASGDConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="nadam",
+        node=NAdamConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="radam",
+        node=RAdamConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="rmsprop",
+        node=RMSpropConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="rprop",
+        node=RpropConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="a2grad_exp",
+        node=A2GradExpConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="a2grad_inc",
+        node=A2GradIncConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="a2grad_uni",
+        node=A2GradUniConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="accsgd",
+        node=AccSGDConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="adabelief",
+        node=AdaBeliefConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="adabound",
+        node=AdaBoundConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="adamod",
+        node=AdaModConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="adafactor",
+        node=AdafactorConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="adamp",
+        node=AdamPConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="aggmo",
+        node=AggMoConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="apollo",
+        node=ApolloConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="diffgrad",
+        node=DiffGradConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="lamb",
+        node=LambConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="madgrad",
+        node=MADGRADConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="novograd",
+        node=NovoGradConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="pid",
+        node=PIDConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="qhadam",
+        node=QHAdamConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="qhm",
+        node=QHMConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="ranger",
+        node=RangerConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="ranger_qh",
+        node=RangerQHConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="ranger_va",
+        node=RangerVAConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="sgdp",
+        node=SGDPConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="sgdw",
+        node=SGDWConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="swats",
+        node=SWATSConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="shampoo",
+        node=ShampooConf,
+    )
+    cs.store(
+        group="optimizer",
+        name="yogi",
+        node=YogiConf,
+    )

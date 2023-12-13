@@ -1,11 +1,27 @@
-import paddle
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """ Modulus Managers
 """
+
 import logging
 from typing import Dict, List, Union
 from enum import Enum
+import paddle
 from packaging import version
-from modulus.sym.constants import JIT_PYTORCH_VERSION
+from modulus.sym.constants import JIT_PADDLE_VERSION
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,15 +36,19 @@ class JitManager(object):
     def __new__(cls):
         obj = super(JitManager, cls).__new__(cls)
         obj.__dict__ = cls._shared_state
-        if not hasattr(obj, '_enabled'):
-            obj._enabled = version.parse(paddle.__version__) >= version.parse(
-                JIT_PYTORCH_VERSION)
-        if not hasattr(obj, '_arch_mode'):
+
+        # Set the defaults
+        if not hasattr(obj, "_enabled"):
+            obj._enabled = JIT_PADDLE_VERSION is not None and version.parse(
+                paddle.__version__
+            ) >= version.parse(JIT_PADDLE_VERSION)
+        if not hasattr(obj, "_arch_mode"):
             obj._arch_mode = JitArchMode.ONLY_ACTIVATION
-        if not hasattr(obj, '_use_nvfuser'):
+        if not hasattr(obj, "_use_nvfuser"):
             obj._use_nvfuser = True
-        if not hasattr(obj, '_autograd_nodes'):
+        if not hasattr(obj, "_autograd_nodes"):
             obj._autograd_nodes = False
+
         return obj
 
     @property
@@ -37,14 +57,14 @@ class JitManager(object):
 
     @arch_mode.setter
     def arch_mode(self, mode: str):
-        if mode == 'all':
+        if mode == "all":
             self._arch_mode = JitArchMode.ALL
-        elif mode == 'only_activation':
+        elif mode == "only_activation":
             self._arch_mode = JitArchMode.ONLY_ACTIVATION
         else:
             raise ValueError(
-                f'jit arch mode should be all/only_activation, but found {mode}'
-                )
+                f"jit arch mode should be all/only_activation, but found {mode}"
+            )
 
     @property
     def enabled(self):
@@ -53,8 +73,10 @@ class JitManager(object):
     @enabled.setter
     def enabled(self, flag):
         if flag:
-            torch._C._jit_set_nvfuser_single_node_mode(True)
-            torch._C._debug_set_autodiff_subgraph_inlining(False)
+            raise NotImplementedError(
+                "JIT is not supported in Modulus(paddle backend) yet"
+            )
+        # enable fusing single node and prevent tiny autodiff graph are inlined/reverted
         self._enabled = flag
 
     @property
@@ -64,10 +86,13 @@ class JitManager(object):
     @use_nvfuser.setter
     def use_nvfuser(self, flag):
         self._use_nvfuser = flag
-        torch._C._jit_set_nvfuser_enabled(flag)
-        backend = 'NVFuser' if flag else 'NNC'
+        if flag:
+            raise NotImplementedError(
+                "NVFuser is not supported in Modulus(paddle backend) yet"
+            )
+        backend = "NVFuser" if flag else "NNC"
         if self.enabled:
-            logger.info(f'JIT using the {backend} TorchScript backend')
+            logger.info(f"JIT using the {backend} TorchScript backend")
 
     @property
     def autograd_nodes(self):
@@ -78,7 +103,7 @@ class JitManager(object):
         self._autograd_nodes = flag
 
     def __repr__(self):
-        return f'JitManager: {self._shared_state}'
+        return f"JitManager: {self._shared_state}"
 
     def init(self, enabled, arch_mode, use_nvfuser, autograd_nodes):
         self.enabled = enabled
@@ -93,12 +118,17 @@ class GraphManager(object):
     def __new__(cls):
         obj = super(GraphManager, cls).__new__(cls)
         obj.__dict__ = cls._shared_state
-        if not hasattr(obj, '_func_arch'):
+
+        # Set the defaults
+        if not hasattr(obj, "_func_arch"):
             obj._func_arch = True
-        if not hasattr(obj, '_debug'):
+        # TODO we should have a debug flag in the global ModulusManager
+        # in the future
+        if not hasattr(obj, "_debug"):
             obj._debug = False
-        if not hasattr(obj, '_func_arch_allow_partial_hessian'):
+        if not hasattr(obj, "_func_arch_allow_partial_hessian"):
             obj._func_arch_allow_partial_hessian = True
+
         return obj
 
     @property
@@ -126,7 +156,7 @@ class GraphManager(object):
         self._func_arch_allow_partial_hessian = flag
 
     def __repr__(self):
-        return f'GraphManager: {self._shared_state}'
+        return f"GraphManager: {self._shared_state}"
 
     def init(self, func_arch, func_arch_allow_partial_hessian, debug):
         self.func_arch = func_arch

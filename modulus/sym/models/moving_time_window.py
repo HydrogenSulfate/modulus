@@ -1,10 +1,29 @@
-import paddle
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 from typing import Optional, Dict, Tuple
 from modulus.sym.key import Key
 import copy
+
+import paddle
+import paddle.nn as nn
+from paddle import Tensor
+
 import modulus.sym.models.layers as layers
 from .interpolation import smooth_step_1, smooth_step_2
 from modulus.sym.models.arch import Arch
+
 from typing import List
 
 
@@ -22,42 +41,53 @@ class MovingTimeWindowArch(Arch):
         the window forward every iteration.
     """
 
-    def __init__(self, arch: Arch, window_size: float) ->None:
-        output_keys = arch.output_keys + [Key(x.name + '_prev_step') for x in
-            arch.output_keys] + [Key(x.name + '_prev_step_diff') for x in
-            arch.output_keys]
-        super().__init__(input_keys=arch.input_keys, output_keys=
-            output_keys, periodicity=arch.periodicity)
+    def __init__(
+        self,
+        arch: Arch,
+        window_size: float,
+    ) -> None:
+        output_keys = (
+            arch.output_keys
+            + [Key(x.name + "_prev_step") for x in arch.output_keys]
+            + [Key(x.name + "_prev_step_diff") for x in arch.output_keys]
+        )
+        super().__init__(
+            input_keys=arch.input_keys,
+            output_keys=output_keys,
+            periodicity=arch.periodicity,
+        )
+
+        # set networks for current and prev time window
         self.arch_prev_step = arch
         self.arch = copy.deepcopy(arch)
+
+        # store time window parameters
         self.window_size = window_size
-        out_92 = paddle.create_parameter(shape=paddle.empty(shape=[1]).
-            shape, dtype=paddle.empty(shape=[1]).numpy().dtype,
-            default_initializer=paddle.nn.initializer.Assign(paddle.empty(
-            shape=[1])))
-        out_92.stop_gradient = not False
-        self.window_location = out_92
+        self.window_location = self.create_parameter(
+            [1],
+            default_initializer=nn.initializer.Assign(paddle.empty([1])),
+        )
         self.reset_parameters()
 
-    def forward(self, in_vars: Dict[str, Tensor]) ->Dict[str, Tensor]:
+    def forward(self, in_vars: Dict[str, Tensor]) -> Dict[str, Tensor]:
         with paddle.no_grad():
-            in_vars['t'] += self.window_location
+            in_vars["t"] += self.window_location
         y_prev_step = self.arch_prev_step.forward(in_vars)
         y = self.arch.forward(in_vars)
         y_keys = list(y.keys())
         for key in y_keys:
             y_prev = y_prev_step[key]
-            y[key + '_prev_step'] = y_prev
-            y[key + '_prev_step_diff'] = y[key] - y_prev
+            y[key + "_prev_step"] = y_prev
+            y[key + "_prev_step_diff"] = y[key] - y_prev
         return y
 
     def move_window(self):
         self.window_location.data += self.window_size
-        for param, param_prev_step in zip(self.arch.parameters(), self.
-            arch_prev_step.parameters()):
+        for param, param_prev_step in zip(
+            self.arch.parameters(), self.arch_prev_step.parameters()
+        ):
             param_prev_step.data = param.detach().clone().data
-            param_prev_step.stop_gradient = not False
+            param_prev_step.stop_gradient = True
 
-    def reset_parameters(self) ->None:
-        init_Constant = paddle.nn.initializer.Constant(value=0)
-        init_Constant(self.window_location)
+    def reset_parameters(self) -> None:
+        nn.initializer.Constant(0)(self.window_location)

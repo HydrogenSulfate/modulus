@@ -1,9 +1,20 @@
-import sys
-sys.path.append(
-    '/workspace/hesensen/paper_reprod/PaConvert/paddle_project_hss/utils')
-import paddle_aux
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """ Key
 """
+
 from typing import Union, List
 from functools import reduce
 from .constants import diff_str, NO_OP_SCALE
@@ -30,8 +41,7 @@ class Key(object):
       Characteristic location and scale of quantity: used for normalisation.
     """
 
-    def __init__(self, name, size=1, derivatives=[], base_unit=None, scale=
-        NO_OP_SCALE):
+    def __init__(self, name, size=1, derivatives=[], base_unit=None, scale=NO_OP_SCALE):
         super(Key, self).__init__()
         self.name = name
         self.size = size
@@ -62,7 +72,7 @@ class Key(object):
         elif isinstance(name_or_tuple, cls):
             key = name_or_tuple
         else:
-            raise ValueError('can only convert string or tuple to key')
+            raise ValueError("can only convert string or tuple to key")
         return key
 
     @staticmethod
@@ -118,8 +128,10 @@ class Key(object):
         >>>        output_keys: [[u,3],w] # Key('u',size=3), Key('w',size=1)
 
         """
+        # Just single key name
         if isinstance(key_cfg, str):
             keys = [Key.convert(key_cfg.lstrip())]
+        # Multiple keys
         elif isinstance(key_cfg, list):
             keys = []
             for cfg_obj in key_cfg:
@@ -137,22 +149,23 @@ class Key(object):
                     except:
                         key.size = 1
                     keys.append(key)
+                # Manually provided
                 elif isinstance(cfg_obj, Key):
                     keys.append(cfg_obj)
                 else:
-                    raise ValueError(
-                        f'Invalid key parameter set in config {key_cfg}')
+                    raise ValueError(f"Invalid key parameter set in config {key_cfg}")
         else:
-            raise ValueError(f'Invalid key parameter set in config {key_cfg}')
+            raise ValueError(f"Invalid key parameter set in config {key_cfg}")
         return keys
 
     @property
     def unit(self):
-        return self.base_unit / reduce(lambda x, y: x.base_unit * y.
-            base_unit, self.derivatives)
+        return self.base_unit / reduce(
+            lambda x, y: x.base_unit * y.base_unit, self.derivatives
+        )
 
     def __str__(self):
-        diff_str = ''.join([('__' + x.name) for x in self.derivatives])
+        diff_str = "".join(["__" + x.name for x in self.derivatives])
         return self.name + diff_str
 
     def __repr__(self):

@@ -1,5 +1,20 @@
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import paddle
 from typing import Dict
+
 from modulus.sym import quantity
 from modulus.sym.node import Node
 
@@ -26,24 +41,32 @@ class NonDimensionalizer:
         luminosity scale. Defaults to quantity(1.0, "cd").
     """
 
-    def __init__(self, length_scale=quantity(1.0, 'm'), time_scale=quantity
-        (1.0, 's'), mass_scale=quantity(1.0, 'kg'), temperature_scale=
-        quantity(1.0, 'K'), current_scale=quantity(1.0, 'A'),
-        substance_scale=quantity(1.0, 'mol'), luminosity_scale=quantity(1.0,
-        'cd')):
-        self._print_scale(length_scale, 'length')
-        self._print_scale(time_scale, 'time')
-        self._print_scale(mass_scale, 'mass')
-        self._print_scale(temperature_scale, 'temperature')
-        self._print_scale(current_scale, 'current')
-        self._print_scale(substance_scale, 'substance')
-        self._print_scale(luminosity_scale, 'luminosity')
-        self.scale_dict = {'[length]': length_scale.to_base_units(),
-            '[time]': time_scale.to_base_units(), '[mass]': mass_scale.
-            to_base_units(), '[temperature]': temperature_scale.
-            to_base_units(), '[current]': current_scale.to_base_units(),
-            '[substance]': substance_scale.to_base_units(), '[luminosity]':
-            luminosity_scale.to_base_units()}
+    def __init__(
+        self,
+        length_scale=quantity(1.0, "m"),
+        time_scale=quantity(1.0, "s"),
+        mass_scale=quantity(1.0, "kg"),
+        temperature_scale=quantity(1.0, "K"),
+        current_scale=quantity(1.0, "A"),
+        substance_scale=quantity(1.0, "mol"),
+        luminosity_scale=quantity(1.0, "cd"),
+    ):
+        self._print_scale(length_scale, "length")
+        self._print_scale(time_scale, "time")
+        self._print_scale(mass_scale, "mass")
+        self._print_scale(temperature_scale, "temperature")
+        self._print_scale(current_scale, "current")
+        self._print_scale(substance_scale, "substance")
+        self._print_scale(luminosity_scale, "luminosity")
+        self.scale_dict = {
+            "[length]": length_scale.to_base_units(),
+            "[time]": time_scale.to_base_units(),
+            "[mass]": mass_scale.to_base_units(),
+            "[temperature]": temperature_scale.to_base_units(),
+            "[current]": current_scale.to_base_units(),
+            "[substance]": substance_scale.to_base_units(),
+            "[luminosity]": luminosity_scale.to_base_units(),
+        }
 
     def ndim(self, qty, return_unit=False):
         """
@@ -56,11 +79,12 @@ class NonDimensionalizer:
         return_unit : bool
             If True, returns the non-dimensionalized and normalized value in for of a quantity with a "dimensionless" unit. If False, only returns the non-dimensionalized and normalized value
         """
+
         qty.ito_base_units()
         for key, value in dict(qty.dimensionality).items():
             qty /= self.scale_dict[key] ** value
         if dict(qty.dimensionality):
-            raise RuntimeError('Error in non-dimensionalization')
+            raise RuntimeError("Error in non-dimensionalization")
         if return_unit:
             return qty
         else:
@@ -79,13 +103,14 @@ class NonDimensionalizer:
         return_unit : bool
             If True, returns the scaled value in for of a quantity with a unit. If False, only returns the scaled value
         """
+
         try:
             if dict(invar.dimensionality):
-                raise RuntimeError('Error in dimensionalization')
+                raise RuntimeError("Error in dimensionalization")
         except:
             pass
         try:
-            qty = quantity(invar, '')
+            qty = quantity(invar, "")
         except:
             qty = invar
         dummy_qty = quantity(1, unit)
@@ -103,7 +128,7 @@ class NonDimensionalizer:
         Print scales only if the default values are changed
         """
         if scale.magnitude != 1.0:
-            print(f'{name} scale is {scale}')
+            print(f"{name} scale is {scale}")
 
 
 class Scaler:
@@ -132,9 +157,16 @@ class Scaler:
         """
         generates a Modulus Node
         """
-        return [Node(inputs=self.invar, outputs=self.outvar, evaluate=
-            _Scale(self.invar, self.outvar, self.outvar_unit, self.
-            non_dimensionalizer))]
+
+        return [
+            Node(
+                inputs=self.invar,
+                outputs=self.outvar,
+                evaluate=_Scale(
+                    self.invar, self.outvar, self.outvar_unit, self.non_dimensionalizer
+                ),
+            )
+        ]
 
 
 class _Scale(paddle.nn.Layer):
@@ -160,10 +192,10 @@ class _Scale(paddle.nn.Layer):
         self.outvar_unit = outvar_unit
         self.non_dimensionalizer = non_dimensionalizer
 
-    def forward(self, invar: Dict[str, paddle.Tensor]) ->Dict[str, paddle.
-        Tensor]:
+    def forward(self, invar: Dict[str, paddle.Tensor]) -> Dict[str, paddle.Tensor]:
         outvar = {}
         for i, key in enumerate(self.invar):
-            outvar[self.outvar[i]] = self.non_dimensionalizer.dim(invar[key
-                ], self.outvar_unit[i])
+            outvar[self.outvar[i]] = self.non_dimensionalizer.dim(
+                invar[key], self.outvar_unit[i]
+            )
         return outvar

@@ -1,4 +1,5 @@
-import paddle
+# ignore_header_test
+
 """"""
 """
 Pix2Pix model. This code was modified from, https://github.com/NVIDIA/pix2pixHD
@@ -51,138 +52,209 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """
+
+import paddle
+import paddle.nn as nn
 import functools
 from typing import List, Dict
 import numpy as np
+
 from modulus.sym.key import Key
 import modulus.sym.models.layers as layers
 from modulus.sym.models.layers import Activation
 from modulus.sym.models.arch import Arch
+
 Tensor = paddle.Tensor
 
 
-class Pix2PixModelCore(paddle.nn.Layer):
-
-    def __init__(self, in_channels: int, out_channels: int, dimension: int,
-        conv_layer_size: int=64, n_downsampling: int=3, n_upsampling: int=3,
-        n_blocks: int=3, batch_norm: bool=False, padding_type: str=
-        'reflect', activation_fn: Activation=Activation.RELU):
-        assert n_blocks >= 0 and n_downsampling >= 0 and n_upsampling >= 0, 'Invalid arch params'
-        assert padding_type in ['reflect', 'zero', 'replicate'
-            ], 'Invalid padding type'
+class Pix2PixModelCore(nn.Layer):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        dimension: int,
+        conv_layer_size: int = 64,
+        n_downsampling: int = 3,
+        n_upsampling: int = 3,
+        n_blocks: int = 3,
+        batch_norm: bool = False,
+        padding_type: str = "reflect",
+        activation_fn: Activation = Activation.RELU,
+    ):
+        assert (
+            n_blocks >= 0 and n_downsampling >= 0 and n_upsampling >= 0
+        ), "Invalid arch params"
+        assert padding_type in ["reflect", "zero", "replicate"], "Invalid padding type"
         super().__init__()
-        activation = layers.get_activation_fn(activation_fn, module=True,
-            inplace=True)
+
+        activation = layers.get_activation_fn(activation_fn, module=True, inplace=True)
+        # set padding and convolutions
         if dimension == 1:
-            padding = paddle.nn.Pad1D(padding=3, mode='reflect')
-            conv = paddle.nn.Conv1D
-            trans_conv = paddle.nn.Conv1DTranspose
-            norm = paddle.nn.BatchNorm1D
+            padding = nn.Pad1D(padding=3, mode="reflect")
+            conv = nn.Conv1D
+            trans_conv = nn.Conv1DTranspose
+            norm = nn.BatchNorm1D
         elif dimension == 2:
-            padding = paddle.nn.Pad2D(padding=3, mode='reflect')
-            conv = paddle.nn.Conv2D
-            trans_conv = paddle.nn.Conv2DTranspose
-            norm = paddle.nn.BatchNorm2D
+            padding = nn.Pad2D(padding=3, mode="reflect")
+            conv = nn.Conv2D
+            trans_conv = nn.Conv2DTranspose
+            norm = nn.BatchNorm2D
         elif dimension == 3:
-            padding = paddle.nn.Pad3D(padding=3, mode='reflect')
-            conv = paddle.nn.Conv3D
-            trans_conv = paddle.nn.Conv3DTranspose
-            norm = paddle.nn.BatchNorm3D
+            padding = nn.Pad3D(padding=3, mode="reflect")
+            conv = nn.Conv3D
+            trans_conv = nn.Conv3DTranspose
+            norm = nn.BatchNorm3D
         else:
             raise ValueError(
-                f'Pix2Pix only supported dimensions 1, 2, 3. Got {dimension}')
-        model = [padding, conv(in_channels, conv_layer_size, kernel_size=7,
-            padding=0)]
+                f"Pix2Pix only supported dimensions 1, 2, 3. Got {dimension}"
+            )
+
+        model = [
+            padding,
+            conv(in_channels, conv_layer_size, kernel_size=7, padding=0),
+        ]
         if batch_norm:
             model.append(norm(conv_layer_size))
         model.append(activation)
+
+        ### downsample
         for i in range(n_downsampling):
-            mult = 2 ** i
-            model.append(conv(conv_layer_size * mult, conv_layer_size *
-                mult * 2, kernel_size=3, stride=2, padding=1))
+            mult = 2**i
+            model.append(
+                conv(
+                    conv_layer_size * mult,
+                    conv_layer_size * mult * 2,
+                    kernel_size=3,
+                    stride=2,
+                    padding=1,
+                )
+            )
             if batch_norm:
                 model.append(norm(conv_layer_size * mult * 2))
             model.append(activation)
-        mult = 2 ** n_downsampling
+
+        ### resnet blocks
+        mult = 2**n_downsampling
         for i in range(n_blocks):
-            model += [ResnetBlock(dimension, conv_layer_size * mult,
-                padding_type=padding_type, activation=activation,
-                use_batch_norm=batch_norm)]
+            model += [
+                ResnetBlock(
+                    dimension,
+                    conv_layer_size * mult,
+                    padding_type=padding_type,
+                    activation=activation,
+                    use_batch_norm=batch_norm,
+                )
+            ]
+
+        ### upsample
         for i in range(n_downsampling):
             mult = 2 ** (n_downsampling - i)
-            model.append(trans_conv(int(conv_layer_size * mult), int(
-                conv_layer_size * mult / 2), kernel_size=3, stride=2,
-                padding=1, output_padding=1))
+            model.append(
+                trans_conv(
+                    int(conv_layer_size * mult),
+                    int(conv_layer_size * mult / 2),
+                    kernel_size=3,
+                    stride=2,
+                    padding=1,
+                    output_padding=1,
+                )
+            )
             if batch_norm:
                 model.append(norm(int(conv_layer_size * mult / 2)))
             model.append(activation)
+
+        # super-resolution layers
         for i in range(max([0, n_upsampling - n_downsampling])):
-            model.append(trans_conv(int(conv_layer_size), int(
-                conv_layer_size), kernel_size=3, stride=2, padding=1,
-                output_padding=1))
+            model.append(
+                trans_conv(
+                    int(conv_layer_size),
+                    int(conv_layer_size),
+                    kernel_size=3,
+                    stride=2,
+                    padding=1,
+                    output_padding=1,
+                )
+            )
             if batch_norm:
                 model.append(norm(conv_layer_size))
             model.append(activation)
-        model += [padding, conv(conv_layer_size, out_channels, kernel_size=
-            7, padding=0)]
-        self.model = paddle.nn.Sequential(*model)
 
-    def forward(self, input: Tensor) ->Tensor:
+        model += [
+            padding,
+            conv(conv_layer_size, out_channels, kernel_size=7, padding=0),
+        ]
+        self.model = nn.Sequential(*model)
+
+    def forward(self, input: Tensor) -> Tensor:
         y = self.model(input)
         return y
 
 
-class ResnetBlock(paddle.nn.Layer):
-
-    def __init__(self, dimension: int, channels: int, padding_type: str=
-        'zero', activation: paddle.nn.Layer=paddle.nn.ReLU(),
-        use_batch_norm: bool=False, use_dropout: bool=False):
+# Define a resnet block
+class ResnetBlock(nn.Layer):
+    def __init__(
+        self,
+        dimension: int,
+        channels: int,
+        padding_type: str = "zero",
+        activation: nn.Layer = nn.ReLU(),
+        use_batch_norm: bool = False,
+        use_dropout: bool = False,
+    ):
         super().__init__()
+
         if dimension == 1:
-            conv = paddle.nn.Conv1D
-            if padding_type == 'reflect':
-                padding = paddle.nn.Pad1D(padding=1, mode='reflect')
-            elif padding_type == 'replicate':
-                padding = paddle.nn.Pad1D(padding=1, mode='replicate')
-            elif padding_type == 'zero':
+            conv = nn.Conv1D
+            if padding_type == "reflect":
+                padding = nn.Pad1D(padding=1, mode="reflect")
+            elif padding_type == "replicate":
+                padding = nn.Pad1D(padding=1, mode="replicate")
+            elif padding_type == "zero":
                 padding = 1
-            norm = paddle.nn.BatchNorm1D
+            norm = nn.BatchNorm1D
         elif dimension == 2:
-            conv = paddle.nn.Conv2D
-            if padding_type == 'reflect':
-                padding = paddle.nn.Pad2D(padding=1, mode='reflect')
-            elif padding_type == 'replicate':
-                padding = paddle.nn.Pad2D(padding=1, mode='replicate')
-            elif padding_type == 'zero':
+            conv = nn.Conv2D
+            if padding_type == "reflect":
+                padding = nn.Pad2D(padding=1, mode="reflect")
+            elif padding_type == "replicate":
+                padding = nn.Pad2D(padding=1, mode="replicate")
+            elif padding_type == "zero":
                 padding = 1
-            norm = paddle.nn.BatchNorm2D
+            norm = nn.BatchNorm2D
         elif dimension == 3:
-            conv = paddle.nn.Conv3D
-            if padding_type == 'reflect':
-                padding = paddle.nn.Pad3D(padding=1, mode='reflect')
-            elif padding_type == 'replicate':
-                padding = paddle.nn.Pad3D(padding=1, mode='replicate')
-            elif padding_type == 'zero':
+            conv = nn.Conv3D
+            if padding_type == "reflect":
+                padding = nn.Pad3D(padding=1, mode="reflect")
+            elif padding_type == "replicate":
+                padding = nn.Pad3D(padding=1, mode="replicate")
+            elif padding_type == "zero":
                 padding = 1
-            norm = paddle.nn.BatchNorm3D
+            norm = nn.BatchNorm3D
+
         conv_block = []
         p = 0
-        if padding_type != 'zero':
+        if padding_type != "zero":
             conv_block += [padding]
+
         conv_block.append(conv(channels, channels, kernel_size=3, padding=p))
         if use_batch_norm:
             conv_block.append(norm(channels))
         conv_block.append(activation)
+
         if use_dropout:
-            conv_block += [paddle.nn.Dropout(p=0.5)]
-        if padding_type != 'zero':
+            conv_block += [nn.Dropout(0.5)]
+
+        if padding_type != "zero":
             conv_block += [padding]
-        conv_block += [conv(channels, channels, kernel_size=3, padding=p)]
+        conv_block += [
+            conv(channels, channels, kernel_size=3, padding=p),
+        ]
         if use_batch_norm:
             conv_block.append(norm(channels))
-        self.conv_block = paddle.nn.Sequential(*conv_block)
 
-    def forward(self, x: Tensor) ->Tensor:
+        self.conv_block = nn.Sequential(*conv_block)
+
+    def forward(self, x: Tensor) -> Tensor:
         out = x + self.conv_block(x)
         return out
 
@@ -251,28 +323,59 @@ class Pix2PixArch(Arch):
     Based on the implementation: https://github.com/NVIDIA/pix2pixHD
     """
 
-    def __init__(self, input_keys: List[Key], output_keys: List[Key],
-        dimension: int, detach_keys: List[Key]=[], conv_layer_size: int=64,
-        n_downsampling: int=3, n_blocks: int=3, scaling_factor: int=1,
-        activation_fn: Activation=Activation.RELU, batch_norm: bool=False,
-        padding_type='reflect'):
-        super().__init__(input_keys=input_keys, output_keys=output_keys,
-            detach_keys=detach_keys)
+    def __init__(
+        self,
+        input_keys: List[Key],
+        output_keys: List[Key],
+        dimension: int,
+        detach_keys: List[Key] = [],
+        conv_layer_size: int = 64,
+        n_downsampling: int = 3,
+        n_blocks: int = 3,
+        scaling_factor: int = 1,
+        activation_fn: Activation = Activation.RELU,
+        batch_norm: bool = False,
+        padding_type="reflect",
+    ):
+        super().__init__(
+            input_keys=input_keys, output_keys=output_keys, detach_keys=detach_keys
+        )
         in_channels = sum(self.input_key_dict.values())
         out_channels = sum(self.output_key_dict.values())
         self.var_dim = 1
-        scaling_factor = int(scaling_factor)
-        assert scaling_factor in {1, 2, 4, 8
-            }, 'The scaling factor must be 1, 2, 4, or 8!'
-        n_upsampling = n_downsampling + int(np.log2(scaling_factor))
-        self._impl = Pix2PixModelCore(in_channels, out_channels, dimension,
-            conv_layer_size, n_downsampling, n_upsampling, n_blocks,
-            batch_norm, padding_type, activation_fn)
 
-    def forward(self, in_vars: Dict[str, Tensor]) ->Dict[str, Tensor]:
-        input = self.prepare_input(in_vars, self.input_key_dict.keys(),
-            detach_dict=self.detach_key_dict, dim=1, input_scales=self.
-            input_scales)
+        # Scaling factor must be 1, 2, 4, or 8
+        scaling_factor = int(scaling_factor)
+        assert scaling_factor in {
+            1,
+            2,
+            4,
+            8,
+        }, "The scaling factor must be 1, 2, 4, or 8!"
+        n_upsampling = n_downsampling + int(np.log2(scaling_factor))
+
+        self._impl = Pix2PixModelCore(
+            in_channels,
+            out_channels,
+            dimension,
+            conv_layer_size,
+            n_downsampling,
+            n_upsampling,
+            n_blocks,
+            batch_norm,
+            padding_type,
+            activation_fn,
+        )
+
+    def forward(self, in_vars: Dict[str, Tensor]) -> Dict[str, Tensor]:
+        input = self.prepare_input(
+            in_vars,
+            self.input_key_dict.keys(),
+            detach_dict=self.detach_key_dict,
+            dim=1,
+            input_scales=self.input_scales,
+        )
         output = self._impl(input)
-        return self.prepare_output(output, self.output_key_dict, dim=1,
-            output_scales=self.output_scales)
+        return self.prepare_output(
+            output, self.output_key_dict, dim=1, output_scales=self.output_scales
+        )

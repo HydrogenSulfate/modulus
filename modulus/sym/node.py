@@ -1,7 +1,21 @@
-import paddle
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """ Modulus nodes
 """
 from sympy import Add
+import paddle
 from .constants import diff_str
 from .key import Key
 
@@ -24,21 +38,24 @@ class Node:
         If true then any trainable parameters contained in the node will be optimized by the `Trainer`.
     """
 
-    def __init__(self, inputs, outputs, evaluate, name='Node', optimize=False):
+    def __init__(self, inputs, outputs, evaluate, name="Node", optimize=False):
         super().__init__()
-        self._inputs = Key.convert_list([x for x in inputs if diff_str not in
-            str(x)])
+        self._inputs = Key.convert_list([x for x in inputs if diff_str not in str(x)])
         self._outputs = Key.convert_list(outputs)
-        self._derivatives = Key.convert_list([x for x in inputs if diff_str in
-            str(x)])
+        self._derivatives = Key.convert_list([x for x in inputs if diff_str in str(x)])
         self.evaluate = evaluate
         self._name = name
         self._optimize = optimize
-        if not hasattr(self.evaluate, 'saveable'):
+
+        # set evaluate saveable to false if doesn't exist
+        if not hasattr(self.evaluate, "saveable"):
             self.evaluate.saveable = False
+
+        # check that model has name if optimizable
         if self._optimize:
-            assert hasattr(self.evaluate, 'name'
-                ), 'Optimizable nodes require model to have unique name'
+            assert hasattr(
+                self.evaluate, "name"
+            ), "Optimizable nodes require model to have unique name"
 
     @classmethod
     def from_sympy(cls, eq, out_name, freeze_terms=[], detach_names=[]):
@@ -64,19 +81,33 @@ class Node:
         -------
         node : Node
         """
-        from modulus.sym.utils.sympy.torch_printer import torch_lambdify, _subs_derivatives, SympyToTorch
+
+        from modulus.sym.utils.sympy.torch_printer import (
+            torch_lambdify,
+            _subs_derivatives,
+            SympyToTorch,
+        )
+
+        # sub all functions and derivatives with symbols
         sub_eq = _subs_derivatives(eq)
+
+        # construct Modulus node
         if bool(freeze_terms):
-            print('the terms ' + str(freeze_terms) +
-                ' will be frozen in the equation ' + str(out_name) + ': ' +
-                str(Add.make_args(sub_eq)))
-            print('Verify before proceeding!')
+            print(
+                "the terms "
+                + str(freeze_terms)
+                + " will be frozen in the equation "
+                + str(out_name)
+                + ": "
+                + str(Add.make_args(sub_eq))
+            )
+            print("Verify before proceeding!")
         else:
             pass
         evaluate = SympyToTorch(sub_eq, out_name, freeze_terms, detach_names)
         inputs = Key.convert_list(evaluate.keys)
         outputs = Key.convert_list([out_name])
-        node = cls(inputs, outputs, evaluate, name='Sympy Node: ' + out_name)
+        node = cls(inputs, outputs, evaluate, name="Sympy Node: " + out_name)
         return node
 
     @property
@@ -91,6 +122,7 @@ class Node:
         outputs : List[str]
             Outputs of node.
         """
+
         return self._outputs
 
     @property
@@ -101,6 +133,7 @@ class Node:
         inputs : List[str]
             Inputs of node.
         """
+
         return self._inputs
 
     @property
@@ -111,6 +144,7 @@ class Node:
         derivatives : List[str]
             Derivative inputs of node.
         """
+
         return self._derivatives
 
     @property
@@ -118,8 +152,22 @@ class Node:
         return self._optimize
 
     def __str__(self):
-        return 'node: ' + self.name + '\n' + 'evaluate: ' + str(self.
-            evaluate.__class__.__name__) + '\n' + 'inputs: ' + str(self.inputs
-            ) + '\n' + 'derivatives: ' + str(self.derivatives
-            ) + '\n' + 'outputs: ' + str(self.outputs
-            ) + '\n' + 'optimize: ' + str(self.optimize)
+        return (
+            "node: "
+            + self.name
+            + "\n"
+            + "evaluate: "
+            + str(self.evaluate.__class__.__name__)
+            + "\n"
+            + "inputs: "
+            + str(self.inputs)
+            + "\n"
+            + "derivatives: "
+            + str(self.derivatives)
+            + "\n"
+            + "outputs: "
+            + str(self.outputs)
+            + "\n"
+            + "optimize: "
+            + str(self.optimize)
+        )

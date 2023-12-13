@@ -1,16 +1,28 @@
-import sys
-sys.path.append(
-    '/workspace/hesensen/paper_reprod/PaConvert/paddle_project_hss/utils')
-import paddle_aux
-import paddle
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import inspect
 import logging
 import tarfile
+import paddle
 import numpy as np
 import gc
+
 from typing import Dict, List, Union, Callable, Tuple
 from pathlib import Path
 from io import BytesIO
+
 from modulus.sym.domain.inferencer import Inferencer
 from modulus.sym.domain.constraint import Constraint
 from modulus.sym.graph import Graph
@@ -19,7 +31,8 @@ from modulus.sym.node import Node
 from modulus.sym.models.arch import Arch
 from modulus.sym.distributed import DistributedManager
 from modulus.sym.dataset import DictInferencePointwiseDataset
-logger = logging.getLogger('__name__')
+
+logger = logging.getLogger("__name__")
 
 
 class OVVoxelInferencer(Inferencer):
@@ -44,9 +57,16 @@ class OVVoxelInferencer(Inferencer):
         Modulus OV Extension progress bar for displaying inference progress, by default None
     """
 
-    def __init__(self, nodes: List[Node], input_keys: List[Key],
-        output_keys: List[Key], mask_value: float=np.nan, requires_grad:
-        bool=False, eco: bool=False, progress_bar=None):
+    def __init__(
+        self,
+        nodes: List[Node],
+        input_keys: List[Key],
+        output_keys: List[Key],
+        mask_value: float = np.nan,
+        requires_grad: bool = False,
+        eco: bool = False,
+        progress_bar=None,
+    ):
         self.stop_gradient = not requires_grad
         self._eco = eco
         self.mask_value = mask_value
@@ -54,13 +74,24 @@ class OVVoxelInferencer(Inferencer):
         self.input_names = [key.name for key in input_keys]
         self.output_names = [key.name for key in output_keys]
         self.progress_bar = progress_bar
-        self.model = Graph(nodes, input_keys, output_keys)
+
+        # construct model from nodes
+        self.model = Graph(
+            nodes,
+            input_keys,
+            output_keys,
+        )
         self.manager = DistributedManager()
         self.place = self.manager.place
 
-    def setup_voxel_domain(self, bounds: List[List[int]], npoints: List[int
-        ], invar: Dict[str, np.array]={}, batch_size: int=1024, mask_fn:
-        Union[Callable, None]=None) ->None:
+    def setup_voxel_domain(
+        self,
+        bounds: List[List[int]],
+        npoints: List[int],
+        invar: Dict[str, np.array] = {},  # Additional inputs
+        batch_size: int = 1024,
+        mask_fn: Union[Callable, None] = None,
+    ) -> None:
         """Set up voxel domain for inference
 
         Parameters
@@ -76,103 +107,155 @@ class OVVoxelInferencer(Inferencer):
         mask_fn : Union[Callable, None], optional
             Masking function to remove points from inferencing, by default None
         """
-        assert len(bounds) == len(npoints
-            ), f'Bounds and npoints must be same length {len(bounds)}, {len(npoints)}'
-        assert 0 < len(bounds) < 4, 'Only 1, 2, 3 grid dimensionality allowed'
+        # Start by setting up the
+        assert len(bounds) == len(
+            npoints
+        ), f"Bounds and npoints must be same length {len(bounds)}, {len(npoints)}"
+        assert 0 < len(bounds) < 4, "Only 1, 2, 3 grid dimensionality allowed"
+        # Pad for missing dimensions
         self.npoints = np.array(npoints + [1, 1])[:3]
         self.bounds = np.array(bounds + [[0, 0], [0, 0]])[:3]
+
         dx = np.linspace(self.bounds[0][0], self.bounds[0][1], self.npoints[0])
         dy = np.linspace(self.bounds[1][0], self.bounds[1][1], self.npoints[1])
         dz = np.linspace(self.bounds[2][0], self.bounds[2][1], self.npoints[2])
-        xx, yy, zz = np.meshgrid(dx, dy, dz, indexing='ij')
-        invar.update({'x': np.reshape(xx, (-1, 1)), 'y': np.reshape(yy, (-1,
-            1)), 'z': np.reshape(zz, (-1, 1))})
+
+        # Get coordinate arrays (i,j format [x,y,z])
+        xx, yy, zz = np.meshgrid(dx, dy, dz, indexing="ij")
+
+        invar.update(
+            {
+                "x": np.reshape(xx, (-1, 1)),
+                "y": np.reshape(yy, (-1, 1)),
+                "z": np.reshape(zz, (-1, 1)),
+            }
+        )
+
+        # If mask set up mask indexes
         if mask_fn is not None:
             args, *_ = inspect.getargspec(mask_fn)
+            # Fall back np_lambdify does not supply arguement names
+            # Ideally np_lambdify should allow input names to be queried
             if len(args) == 0:
-                args = list(invar.keys())
+                args = list(invar.keys())  # Hope your inputs all go into the mask
             mask_input = {key: invar[key] for key in args if key in invar}
             mask = np.squeeze(mask_fn(**mask_input).astype(np.bool))
+            # True points get masked while False get kept, flip for index
             self.mask_index = np.logical_not(mask)
+            # Mask out to only masked points (only inference here)
             for key, value in invar.items():
                 invar[key] = value[self.mask_index]
-        self.dataset = DictInferencePointwiseDataset(invar=invar,
-            output_names=self.output_names)
-        self.dataloader = Constraint.get_dataloader(dataset=self.dataset,
-            batch_size=batch_size, shuffle=False, drop_last=False,
-            num_workers=0, distributed=False, infinite=False)
 
-    def query(self, memory_fraction: float=1.0) ->Tuple[Dict[str, np.array]]:
+        # get dataset and dataloader
+        self.dataset = DictInferencePointwiseDataset(
+            invar=invar, output_names=self.output_names
+        )
+        self.dataloader = Constraint.get_dataloader(
+            dataset=self.dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            drop_last=False,
+            num_workers=0,
+            distributed=False,
+            infinite=False,
+        )
+
+    def query(self, memory_fraction: float = 1.0) -> Tuple[Dict[str, np.array]]:
         """Query the inference model
 
         Parameters
         ----------
         memory_fraction : float, optional
-            Fraction of GPU memory to let PyTorch allocate, by default 1.0
+            Fraction of GPU memory to let Paddle allocate, by default 1.0
 
         Returns:
             Tuple[Dict[str, np.array]]: Dictionary of input and output arrays
         """
-        # torch.cuda.set_per_process_memory_fraction(memory_fraction)
         invar_cpu = {key: [] for key in self.dataset.invar_keys}
         predvar_cpu = {key: [] for key in self.dataset.outvar_keys}
-        if self.eco or not 'gpu' in str(next(self.model.parameters()).place):
+        # Eco mode on/off loads model every query
+        if self.eco or not "gpu" in str(next(self.model.parameters()).place):
             self.model = self.model.to(self.place)
+        # Loop through mini-batches
         for i, (invar0,) in enumerate(self.dataloader):
-            invar = Constraint._set_device(invar0, device=self.place,
-                requires_grad=not self.stop_gradient)
+            # Move data to device
+            invar = Constraint._set_device(
+                invar0, device=self.place, requires_grad=not self.stop_gradient
+            )
+
             if not self.stop_gradient:
                 pred_outvar = self.model.forward(invar)
             else:
                 with paddle.no_grad():
                     pred_outvar = self.model.forward(invar)
-            invar_cpu = {key: (value + [invar0[key]]) for key, value in
-                invar_cpu.items()}
-            predvar_cpu = {key: (value + [pred_outvar[key].cpu().detach().
-                numpy()]) for key, value in predvar_cpu.items()}
-            if self.progress_bar:
-                self.progress_bar.inference_step(float(i + 1) / len(self.
-                    dataloader))
-        if self.eco:
-            logger.info('Eco inference on, moving model off GPU')
-            self.model.cpu()
-        invar = {key: np.concatenate(value) for key, value in invar_cpu.items()
+
+            invar_cpu = {
+                key: (value + [invar0[key]]) for key, value in invar_cpu.items()
             }
-        predvar = {key: np.concatenate(value) for key, value in predvar_cpu
-            .items()}
+            predvar_cpu = {
+                key: value + [pred_outvar[key].cpu().detach().numpy()]
+                for key, value in predvar_cpu.items()
+            }
+            # Update progress bar if provided
+            if self.progress_bar:
+                self.progress_bar.inference_step(float(i + 1) / len(self.dataloader))
+
+        # Eco mode on/off loads model every query
+        if self.eco:
+            logger.info("Eco inference on, moving model off GPU")
+            self.model.cpu()
+
+        # Concat mini-batch arrays
+        invar = {key: np.concatenate(value) for key, value in invar_cpu.items()}
+        predvar = {key: np.concatenate(value) for key, value in predvar_cpu.items()}
+
+        # Mask outputs
         invar, predvar = self._mask_results(invar, predvar)
+
+        # Finally reshape back into grid
         for key, value in invar.items():
             shape = list(self.npoints) + [value.shape[1]]
-            invar[key] = np.reshape(value, shape)
+            invar[key] = np.reshape(value, (shape))
+
         for key, value in predvar.items():
             shape = list(self.npoints) + [value.shape[1]]
-            predvar[key] = np.reshape(value, shape)
+            predvar[key] = np.reshape(value, (shape))
+
+        # Clean up
         gc.collect()
         paddle.device.cuda.empty_cache()
         paddle.device.cuda.synchronize()
+
         return invar, predvar
 
     def _mask_results(self, invar, predvar):
+        # Reconstruct full array if mask was applied
         for key, value in invar.items():
-            full_array = np.full((self.mask_index.shape[0], value.shape[1]),
-                self.mask_value, dtype=value.dtype)
+            full_array = np.full(
+                (self.mask_index.shape[0], value.shape[1]),
+                self.mask_value,
+                dtype=value.dtype,
+            )
             full_array[self.mask_index] = value
             invar[key] = full_array
         for key, value in predvar.items():
-            full_array = np.full((self.mask_index.shape[0], value.shape[1]),
-                self.mask_value, dtype=value.dtype)
+            full_array = np.full(
+                (self.mask_index.shape[0], value.shape[1]),
+                self.mask_value,
+                dtype=value.dtype,
+            )
             full_array[self.mask_index] = value
             predvar[key] = full_array
         return invar, predvar
 
     def save_results(self, name, results_dir, writer, save_filetypes, step):
         logger.warn(
-            'OVoxInferencer is not designed to be used inside of Modulus solver'
-            )
+            "OVoxInferencer is not designed to be used inside of Modulus solver"
+        )
         pass
 
     def load_models(self, checkpoint_dir: str):
-        logging.info(f'Loading model checkpoint at {checkpoint_dir}')
+        logging.info(f"Loading model checkpoint at {checkpoint_dir}")
         for m in self.model.evaluation_order:
             if m.saveable:
                 m.load(str(checkpoint_dir))
@@ -196,7 +279,7 @@ class OVFourCastNetInferencer(Inferencer):
 
     Parameters
     ----------
-    afno_model : Union[Arch, torch.nn.Module]
+    afno_model : Union[Arch, paddle.nn.Layer]
         AFNO model object
     n_channels : int
         Number of input channels / fields
@@ -208,24 +291,36 @@ class OVFourCastNetInferencer(Inferencer):
         Modulus OV Extension progress bar for displaying inference progress, by default None
     """
 
-    def __init__(self, afno_model: Union[Arch, paddle.nn.Layer], n_channels:
-        int, img_shape: Tuple[int, int]=(720, 1440), eco: bool=False,
-        progress_bar=None):
+    def __init__(
+        self,
+        afno_model: Union[Arch, paddle.nn.Layer],
+        n_channels: int,
+        img_shape: Tuple[int, int] = (720, 1440),
+        eco: bool = False,
+        progress_bar=None,
+    ):
         self._eco = eco
         self.n_channels = n_channels
         self.img_shape = img_shape
         self.progress_bar = progress_bar
+
         self.mu = None
         self.std = None
-        if hasattr(afno_model, '_impl'):
+
+        # Get Paddle model out of node if a Modulus Node
+        if hasattr(afno_model, "_impl"):
             self.model = afno_model._impl
         else:
             self.model = afno_model
+
         self.manager = DistributedManager()
         self.place = self.manager.place
 
-    def load_initial_state_npy(self, file_path: str, tar_file_path: Union[
-        str, None]=None) ->None:
+    def load_initial_state_npy(
+        self,
+        file_path: str,
+        tar_file_path: Union[str, None] = None,
+    ) -> None:
         """Loads a FCN initial state into CPU memory stored in a npy file
 
         Dimensionality of the .npz file should be [in_channels, height, width]
@@ -239,20 +334,29 @@ class OVFourCastNetInferencer(Inferencer):
         """
         if tar_file_path is None:
             file_path = Path(file_path)
-            assert file_path.is_file(), f'Invalid npy file path {file_path}'
+            assert file_path.is_file(), f"Invalid npy file path {file_path}"
             init_np = np.load(file_path)
         else:
             init_np = self.get_array_from_tar(tar_file_path, file_path)
-        logger.info(f'Initial condition loaded with shape {init_np.shape}')
-        assert init_np.ndim == 3, f'Initial state should have 3 dimensions'
-        assert init_np.shape[0
-            ] == self.n_channels, f'Incorrect channel size; expected {self.n_channels}, got {init_np.shape[0]}'
-        assert init_np.shape[1] == self.img_shape[0] and init_np.shape[2
-            ] == self.img_shape[1], 'Incorrect field/image shape'
-        self.init_state = paddle.to_tensor(data=init_np).unsqueeze(axis=0)
 
-    def load_stats_npz(self, file_path: str, tar_file_path: Union[str, None
-        ]=None) ->None:
+        logger.info(f"Initial condition loaded with shape {init_np.shape}")
+        # Run dimension checks
+        assert init_np.ndim == 3, f"Initial state should have 3 dimensions"
+        assert (
+            init_np.shape[0] == self.n_channels
+        ), f"Incorrect channel size; expected {self.n_channels}, got {init_np.shape[0]}"
+        assert (
+            init_np.shape[1] == self.img_shape[0]
+            and init_np.shape[2] == self.img_shape[1]
+        ), "Incorrect field/image shape"
+
+        self.init_state = paddle.to_tensor(init_np).unsqueeze(0)
+
+    def load_stats_npz(
+        self,
+        file_path: str,
+        tar_file_path: Union[str, None] = None,
+    ) -> None:
         """Loads mean and standard deviation normalization stats from npz file
 
         Dimensionality of stats in .npz file should be [in_channels, 1, 1]. Npz
@@ -267,24 +371,29 @@ class OVFourCastNetInferencer(Inferencer):
         """
         if tar_file_path is None:
             file_path = Path(file_path)
-            assert file_path.is_file(), f'Invalid npz file path {file_path}'
+            assert file_path.is_file(), f"Invalid npz file path {file_path}"
             stat_npz = np.load(file_path)
         else:
             stat_npz = self.get_array_from_tar(tar_file_path, file_path)
-        mu = stat_npz['mu']
-        std = stat_npz['std']
-        logger.info(f'Mu array loaded with shape {mu.shape}')
-        logger.info(f'Std array loaded with shape {std.shape}')
-        assert mu.ndim == 3 and std.ndim == 3, f'Mu and Std should have 3 dimensions'
-        assert mu.shape[0
-            ] == self.n_channels, f'Incorrect channel size; expected {self.n_channels}, got {mu.shape[0]}'
-        assert std.shape[0
-            ] == self.n_channels, f'Incorrect channel size; expected {self.n_channels}, got {std.shape[0]}'
-        self.mu = paddle.to_tensor(data=mu).unsqueeze(axis=0)
-        self.std = paddle.to_tensor(data=std).unsqueeze(axis=0)
+
+        mu = stat_npz["mu"]
+        std = stat_npz["std"]
+        logger.info(f"Mu array loaded with shape {mu.shape}")
+        logger.info(f"Std array loaded with shape {std.shape}")
+        # Run dimension checks
+        assert mu.ndim == 3 and std.ndim == 3, f"Mu and Std should have 3 dimensions"
+        assert (
+            mu.shape[0] == self.n_channels
+        ), f"Incorrect channel size; expected {self.n_channels}, got {mu.shape[0]}"
+        assert (
+            std.shape[0] == self.n_channels
+        ), f"Incorrect channel size; expected {self.n_channels}, got {std.shape[0]}"
+
+        self.mu = paddle.to_tensor(mu).unsqueeze(0)
+        self.std = paddle.to_tensor(std).unsqueeze(0)
 
     @paddle.no_grad()
-    def query(self, tsteps: int, memory_fraction: float=1.0) ->np.array:
+    def query(self, tsteps: int, memory_fraction: float = 1.0) -> np.array:
         """Query the inference model, only a batch size of 1 is supported
 
         Parameters
@@ -292,31 +401,42 @@ class OVFourCastNetInferencer(Inferencer):
         tsteps : int
             Number of timesteps to forecast
         memory_fraction : float, optional
-            Fraction of GPU memory to let PyTorch allocate, by default 1.0
+            Fraction of GPU memory to let Paddle allocate, by default 1.0
 
         Returns
         -------
         np.array
             [tsteps+1, channels, height, width] output prediction fields
         """
-        # torch.cuda.set_per_process_memory_fraction(memory_fraction)
         shape = self.init_state.shape
-        outputs = paddle.zeros(shape=[shape[0] + tsteps, shape[1], shape[2],
-            shape[3]])
+        outputs = paddle.zeros([shape[0] + tsteps, shape[1], shape[2], shape[3]])
         outputs[0] = (self.init_state - self.mu) / self.std
-        if self.eco or not 'gpu' in str(next(self.model.parameters()).place):
+
+        # Eco mode on/off loads model every query
+        if self.eco or not "gpu" in str(next(self.model.parameters()).place):
             self.model = self.model.to(self.place)
+        # Loop through time-steps
         for t in range(tsteps):
-            invar = outputs[t:t + 1].to(self.place)
+            # Get input time-step
+            invar = outputs[t : t + 1].to(self.place)
+            # Predict
             outvar = self.model.forward(invar)
+            # Store
             outputs[t + 1] = outvar[0].detach().cpu()
+
+            # Update progress bar if present
             if self.progress_bar:
                 self.progress_bar.inference_step(float(t + 1) / tsteps)
+
+        # Eco mode on/off loads model every query
         if self.eco:
-            logger.info('Eco inference on, moving model off GPU')
+            logger.info("Eco inference on, moving model off GPU")
             self.model.cpu()
+
         outputs = self.std * outputs + self.mu
         outputs = outputs.numpy()
+
+        # Clean up
         gc.collect()
         paddle.device.cuda.empty_cache()
         paddle.device.cuda.synchronize()
@@ -340,11 +460,12 @@ class OVFourCastNetInferencer(Inferencer):
             Extracted numpy array
         """
         tar_file_path = Path(tar_file_path)
-        assert tar_file_path.is_file(
-            ), f'Invalid tar file path {tar_file_path}'
-        with tarfile.open(tar_file_path, 'r:gz') as tar:
-            logging.info(f'Loaded tar.gz with files:')
+        assert tar_file_path.is_file(), f"Invalid tar file path {tar_file_path}"
+        # Open tarball
+        with tarfile.open(tar_file_path, "r:gz") as tar:
+            logging.info(f"Loaded tar.gz with files:")
             tar.list()
+
             array_file = BytesIO()
             array_file.write(tar.extractfile(np_file_path).read())
             array_file.seek(0)
@@ -352,8 +473,8 @@ class OVFourCastNetInferencer(Inferencer):
 
     def save_results(self, name, results_dir, writer, save_filetypes, step):
         logger.warn(
-            'OVFourCastNetInferencer is not designed to be used inside of Modulus solver'
-            )
+            "OVFourCastNetInferencer is not designed to be used inside of Modulus solver"
+        )
         pass
 
     @property

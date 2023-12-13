@@ -1,51 +1,54 @@
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import paddle
+import paddle.nn as nn
+import paddle.nn.functional as F
+from paddle import Tensor
 
 
-class WeightNormLinear(paddle.nn.Layer):
-
-    def __init__(self, in_features: int, out_features: int, bias: bool=True
-        ) ->None:
+class WeightNormLinear(nn.Layer):
+    def __init__(self, in_features: int, out_features: int, bias: bool = True) -> None:
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
-        out_73 = paddle.create_parameter(shape=paddle.empty(shape=(
-            out_features, in_features)).shape, dtype=paddle.empty(shape=(
-            out_features, in_features)).numpy().dtype, default_initializer=
-            paddle.nn.initializer.Assign(paddle.empty(shape=(out_features,
-            in_features))))
-        out_73.stop_gradient = not True
-        self.weight = out_73
-        out_74 = paddle.create_parameter(shape=paddle.empty(shape=(
-            out_features, 1)).shape, dtype=paddle.empty(shape=(out_features,
-            1)).numpy().dtype, default_initializer=paddle.nn.initializer.
-            Assign(paddle.empty(shape=(out_features, 1))))
-        out_74.stop_gradient = not True
-        self.weight_g = out_74
+        self.weight = paddle.create_parameter(
+            (out_features, in_features), dtype=paddle.get_default_dtype()
+        )
+        self.weight_g = paddle.create_parameter(
+            (out_features, 1), dtype=paddle.get_default_dtype()
+        )
         if bias:
-            out_75 = paddle.create_parameter(shape=paddle.empty(shape=
-                [out_features]).shape, dtype=paddle.empty(shape=[out_features])
-                .numpy().dtype, default_initializer=paddle.nn.initializer.
-                Assign(paddle.empty(shape=[out_features])))
-            out_75.stop_gradient = not True
-            self.bias = out_75
+            self.bias = paddle.create_parameter(
+                (out_features,), dtype=paddle.get_default_dtype()
+            )
         else:
-            self.add_parameter(name='bias', parameter=None)
+            self.bias = None
         self.reset_parameters()
 
-    def reset_parameters(self) ->None:
-        paddle.nn.initializer.XavierUniform(self.weight)
-        init_Constant = paddle.nn.initializer.Constant(value=1.0)
-        init_Constant(self.weight_g)
+    def reset_parameters(self) -> None:
+        nn.initializer.XavierUniform()(self.weight)
+        nn.initializer.Constant(1.0)(self.weight_g)
         if self.bias is not None:
-            init_Constant = paddle.nn.initializer.Constant(value=0.0)
-            init_Constant(self.bias)
+            nn.initializer.Constant(0.0)(self.bias)
 
-    def forward(self, input: paddle.Tensor) ->paddle.Tensor:
+    def forward(self, input: Tensor) -> Tensor:
         norm = self.weight.norm(axis=1, p=2, keepdim=True)
         weight = self.weight_g * self.weight / norm
-        return paddle.nn.functional.linear(weight=weight.T, bias=self.bias,
-            x=input)
+        return F.linear(input, weight.T, self.bias)
 
-    def extra_repr(self) ->str:
-        return 'in_features={}, out_features={}, bias={}'.format(self.
-            in_features, self.out_features, self.bias is not None)
+    def extra_repr(self) -> str:
+        return "in_features={}, out_features={}, bias={}".format(
+            self.in_features, self.out_features, self.bias is not None
+        )

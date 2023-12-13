@@ -1,18 +1,35 @@
-import paddle
+# Copyright (c) 2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import enum
 from typing import Callable
 from typing import Union
 from typing import List
+
+import paddle
+import paddle.nn as nn
+import paddle.nn.functional as F
+from paddle import Tensor
 from modulus.sym.manager import JitManager, JitArchMode
 
 
 class ActivationMeta(enum.EnumMeta):
-
     def __getitem__(self, name):
         try:
             return super().__getitem__(name.upper())
         except KeyError as error:
-            raise KeyError(f'Invalid activation function {name}')
+            raise KeyError(f"Invalid activation function {name}")
 
 
 class Activation(enum.Enum, metaclass=ActivationMeta):
@@ -33,21 +50,35 @@ class Activation(enum.Enum, metaclass=ActivationMeta):
     IDENTITY = enum.auto()
 
 
-def identity(x: paddle.Tensor) ->paddle.Tensor:
+def identity(x: paddle.Tensor) -> paddle.Tensor:
     return x
 
 
-def squareplus(x: paddle.Tensor) ->paddle.Tensor:
+def squareplus(x: paddle.Tensor) -> paddle.Tensor:
     b = 4
-    return 0.5 * (x + paddle.sqrt(x=x * x + b))
+    return 0.5 * (x + paddle.sqrt(x * x + b))
 
 
-def gelu(x: paddle.Tensor) ->paddle.Tensor:
-    return 0.5 * x * (1.0 + paddle.tanh(x=x * 0.7978845608 * (1.0 + 
-        0.044715 * x * x)))
+def gelu(x: paddle.Tensor) -> paddle.Tensor:
+    # Applies GELU approximation, slower than sigmoid but more accurate. See: https://github.com/hendrycks/GELUs
+    # Standard GELU that is present in Paddle does not JIT compile!
+    return 0.5 * x * (1.0 + paddle.tanh(x * 0.7978845608 * (1.0 + 0.044715 * x * x)))
+    # return 0.5 * x * (1 + paddle.tanh(paddle.sqrt(2 / np.pi) * (x + 0.044715 * paddle.pow(x, 3))))
 
 
-class Stan(paddle.nn.Layer):
+def custom_silu(x: paddle.Tensor) -> paddle.Tensor:
+    return x * paddle.nn.functional.sigmoid(x)
+
+
+class CustomSilu(nn.Layer):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        return custom_silu(x)
+
+
+class Stan(nn.Layer):
     """
     Self-scalable Tanh (Stan)
     References: Gnanasambandam, Raghav and Shen, Bo and Chung, Jihoon and Yue, Xubo and others.
@@ -57,48 +88,67 @@ class Stan(paddle.nn.Layer):
 
     def __init__(self, out_features=1):
         super().__init__()
-        out_58 = paddle.create_parameter(shape=paddle.ones(shape=
-            out_features).shape, dtype=paddle.ones(shape=out_features).
-            numpy().dtype, default_initializer=paddle.nn.initializer.Assign
-            (paddle.ones(shape=out_features)))
-        out_58.stop_gradient = not True
-        self.beta = out_58
+        self.beta = self.create_parameter(
+            [out_features],
+            default_initializer=paddle.nn.initializer.Constant(1),
+        )
 
     def forward(self, x):
         if x.shape[-1] != self.beta.shape[-1]:
             raise ValueError(
-                f'The last dimension of the input must be equal to the dimension of Stan parameters. Got inputs: {x.shape}, params: {self.beta.shape}'
-                )
-        return paddle.tanh(x=x) * (1.0 + self.beta * x)
+                f"The last dimension of the input must be equal to the dimension of Stan parameters. Got inputs: {x.shape}, params: {self.beta.shape}"
+            )
+        return paddle.tanh(x) * (1.0 + self.beta * x)
 
 
-def get_activation_fn(activation: Union[Activation, Callable[[paddle.Tensor],
-    paddle.Tensor]], module: bool=False, **kwargs) ->Callable[[paddle.Tensor], paddle.Tensor]:
-    activation_mapping = {Activation.ELU: paddle.nn.functional.elu,
-        Activation.LEAKY_RELU: paddle.nn.functional.leaky_relu, Activation.
-        MISH: paddle.nn.functional.mish, Activation.RELU: paddle.nn.
-        functional.relu, Activation.GELU: paddle.nn.functional.gelu,
-        Activation.SELU: paddle.nn.functional.selu, Activation.SIGMOID:
-        paddle.nn.functional.sigmoid, Activation.SILU: paddle.nn.functional
-        .silu, Activation.SIN: paddle.sin, Activation.SQUAREPLUS:
-        squareplus, Activation.SOFTPLUS: paddle.nn.functional.softplus,
-        Activation.TANH: paddle.tanh, Activation.IDENTITY: identity}
-    module_activation_mapping = {Activation.ELU: paddle.nn.ELU, Activation.
-        LEAKY_RELU: paddle.nn.LeakyReLU, Activation.MISH: paddle.nn.Mish,
-        Activation.RELU: paddle.nn.ReLU, Activation.GELU: paddle.nn.GELU,
-        Activation.SELU: paddle.nn.SELU, Activation.PRELU: paddle.nn.PReLU,
-        Activation.SIGMOID: paddle.nn.Sigmoid, Activation.SILU: paddle.nn.
-        Silu, Activation.TANH: paddle.nn.Tanh, Activation.STAN: Stan}
+def get_activation_fn(
+    activation: Union[Activation, Callable[[paddle.Tensor], paddle.Tensor]],
+    module: bool = False,
+    **kwargs,  # Optional parameters
+) -> Callable[[paddle.Tensor], paddle.Tensor]:
+    activation_mapping = {
+        Activation.ELU: F.elu,
+        Activation.LEAKY_RELU: F.leaky_relu,
+        Activation.MISH: F.mish,
+        Activation.RELU: F.relu,
+        Activation.GELU: F.gelu,
+        Activation.SELU: F.selu,
+        Activation.SIGMOID: F.sigmoid,
+        Activation.SILU: custom_silu,
+        Activation.SIN: paddle.sin,
+        Activation.SQUAREPLUS: squareplus,
+        Activation.SOFTPLUS: F.softplus,
+        Activation.TANH: paddle.tanh,
+        Activation.IDENTITY: identity,
+    }
+    # Some activations have parameters in them thus must
+    # be in a Module before forward call
+    module_activation_mapping = {
+        Activation.ELU: nn.ELU,
+        Activation.LEAKY_RELU: nn.LeakyReLU,
+        Activation.MISH: nn.Mish,
+        Activation.RELU: nn.ReLU,
+        Activation.GELU: nn.GLU,
+        Activation.SELU: nn.SELU,
+        Activation.PRELU: nn.PReLU,
+        Activation.SIGMOID: nn.Sigmoid,
+        Activation.SILU: CustomSilu,
+        Activation.TANH: nn.Tanh,
+        Activation.STAN: Stan,
+    }
+
     if activation in activation_mapping and not module:
         activation_fn_ = activation_mapping[activation]
-
-        def activation_fn(x: paddle.Tensor) ->paddle.Tensor:
+        # wraps the function because paddle.sin and F.gelu could not be scripted directly
+        def activation_fn(x: Tensor) -> Tensor:
             return activation_fn_(x)
+
     elif activation in module_activation_mapping:
         activation_fn = module_activation_mapping[activation](**kwargs)
     else:
         activation_fn = activation
-    if JitManager().enabled and JitManager(
-        ).arch_mode == JitArchMode.ONLY_ACTIVATION:
+
+    if JitManager().enabled and JitManager().arch_mode == JitArchMode.ONLY_ACTIVATION:
+        raise NotImplementedError("JIT is not supported for activation functions")
         activation_fn = paddle.jit.script(activation_fn)
     return activation_fn
