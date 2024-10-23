@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import paddle
 import datetime
 from datasets.base import DownscalingDataset
 from datasets.dataset import init_dataset_from_config
@@ -26,7 +27,7 @@ def get_dataset_and_sampler(dataset_cfg, times):
     """
     all_time_dataset_cfg = {"train": False, "all_times": True}
     dataset_cfg.update(all_time_dataset_cfg)
-    (dataset, _) = init_dataset_from_config(dataset_cfg, batch_size=1)
+    dataset, _ = init_dataset_from_config(dataset_cfg, batch_size=1)
     plot_times = [
         convert_datetime_to_cftime(
             datetime.datetime.strptime(time, "%Y-%m-%dT%H:%M:%S")
@@ -70,11 +71,11 @@ def save_images(
     t_index (int): index where times are located
     """
     # weather sub-plot
-    image_lr2 = image_lr[0].unsqueeze(0)
+    image_lr2 = image_lr[0].unsqueeze(axis=0)
     image_lr2 = image_lr2.cpu().numpy()
     image_lr2 = dataset.denormalize_input(image_lr2)
 
-    image_tar2 = image_tar[0].unsqueeze(0)
+    image_tar2 = image_tar[0].unsqueeze(axis=0)
     image_tar2 = image_tar2.cpu().numpy()
     image_tar2 = dataset.denormalize_output(image_tar2)
 
@@ -82,8 +83,8 @@ def save_images(
     if image_tar2.ndim != 4:
         raise ValueError("image_tar2 must be 4-dimensional")
 
-    for idx in range(image_out.shape[0]):
-        image_out2 = image_out[idx].unsqueeze(0)
+    for idx in range(tuple(image_out.shape)[0]):
+        image_out2 = image_out[idx].unsqueeze(axis=0)
         if image_out2.ndim != 4:
             raise ValueError("image_out2 must be 4-dimensional")
 
@@ -93,7 +94,7 @@ def save_images(
 
         time = times[t_index]
         writer.write_time(time_index, time)
-        for channel_idx in range(image_out2.shape[1]):
+        for channel_idx in range(tuple(image_out2.shape)[1]):
             info = dataset.output_channels()[channel_idx]
             channel_name = info.name + info.level
             truth = image_tar2[0, channel_idx]
@@ -108,5 +109,5 @@ def save_images(
             info = input_channel_info[channel_idx]
             channel_name = info.name + info.level
             writer.write_input(channel_name, time_index, image_lr2[0, channel_idx])
-            if channel_idx == image_lr2.shape[1] - 1:
+            if channel_idx == tuple(image_lr2.shape)[1] - 1:
                 break

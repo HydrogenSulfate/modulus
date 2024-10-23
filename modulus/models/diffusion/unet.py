@@ -121,9 +121,7 @@ class UNet(Module):  # TODO a lot of redundancy, need to clean up
     def forward(self, x, img_lr, sigma, force_fp32=False, **model_kwargs):
         # SR: concatenate input channels
         if img_lr is not None:
-            x = paddle.concat((x, img_lr), dim=1)
-
-        x = x.to(paddle.float32)
+            x = paddle.concat((x, img_lr), axis=1)
         sigma = sigma.to(paddle.float32).reshape([-1, 1, 1, 1])
         dtype = (
             paddle.float16

@@ -15,8 +15,8 @@
 # limitations under the License.
 
 
+import paddle
 import numpy as np
-import torch
 
 
 def reshape_fields(
@@ -45,7 +45,7 @@ def reshape_fields(
     if len(np.shape(img)) == 3:
         img = np.expand_dims(img, 0)
 
-    if img.shape[3] > 720:
+    if tuple(img.shape)[3] > 720:
         img = img[:, :, 0:720]  # remove last pixel for era5 data
 
     n_history = n_history
@@ -77,4 +77,4 @@ def reshape_fields(
     elif inp_or_tar == "tar":
         img = np.reshape(img, (n_channels, img_shape_x, img_shape_y))
 
-    return torch.as_tensor(img)
+    return paddle.to_tensor(data=img)

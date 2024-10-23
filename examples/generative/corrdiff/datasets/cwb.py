@@ -149,7 +149,7 @@ class _ZarrDataset(DownscalingDataset):
         if channels is not None:
             means = means[channels]
             stds = stds[channels]
-        return (means, stds)
+        return means, stds
 
     def normalize_input(self, x, channels=None):
         """Convert input from physical units to normalized data."""
@@ -361,9 +361,7 @@ class ZarrDataset(DownscalingDataset):
     ):
         if not all_times:
             self._dataset = (
-                FilterTime(dataset, is_not_2021)
-                if train
-                else FilterTime(dataset, is_2021)
+                FilterTime(dataset, is_2021) if train else FilterTime(dataset, is_2021)
             )
         else:
             self._dataset = dataset
@@ -381,13 +379,11 @@ class ZarrDataset(DownscalingDataset):
         self.max_path = max_path
         self.global_means_path = (
             to_absolute_path(global_means_path)
-            if (global_means_path is not None)
+            if global_means_path is not None
             else None
         )
         self.global_stds_path = (
-            to_absolute_path(global_stds_path)
-            if (global_stds_path is not None)
-            else None
+            to_absolute_path(global_stds_path) if global_stds_path is not None else None
         )
         self.normalization = normalization
 
@@ -396,7 +392,7 @@ class ZarrDataset(DownscalingDataset):
         return self._dataset.info()
 
     def __getitem__(self, idx):
-        (target, input, _) = self._dataset[idx]
+        target, input, _ = self._dataset[idx]
         # crop and downsamples
         # rolling
         if self.train and self.roll:
@@ -469,7 +465,7 @@ class ZarrDataset(DownscalingDataset):
 
     def image_shape(self):
         """Get the shape of the image (same for input and output)."""
-        return (self.img_shape_x, self.img_shape_y)
+        return self.img_shape_x, self.img_shape_y
 
     def normalize_input(self, x):
         """Convert input from physical units to normalized data."""

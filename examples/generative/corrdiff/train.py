@@ -14,11 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os, time, psutil, hydra, torch
+import os
+import paddle
+import time, psutil, hydra
 from hydra.utils import to_absolute_path
 from omegaconf import DictConfig, OmegaConf
-from torch.nn.parallel import DistributedDataParallel
-from torch.utils.tensorboard import SummaryWriter
 from modulus import Module
 from modulus.models.diffusion import UNet, EDMPrecondSR
 from modulus.distributed import DistributedManager
@@ -30,11 +30,11 @@ from datasets.dataset import init_train_valid_datasets_from_config
 from helpers.train_helpers import (
     set_patch_shape,
     set_seed,
-    configure_cuda_for_consistent_precision,
     compute_num_accumulation_rounds,
     handle_and_clip_gradients,
     is_time_for_periodic_task,
 )
+from visualdl import LogWriter
 
 
 # Train the CorrDiff model using the configurations in "conf/config_training.yaml"
@@ -47,13 +47,16 @@ def main(cfg: DictConfig) -> None:
 
     # Initialize loggers
     if dist.rank == 0:
-        writer = SummaryWriter(log_dir="tensorboard")
+        with LogWriter(logdir="visualdl_log") as writer:
+            writer.add_scalar(tag="example_metric", step=1, value=0.5)
     logger = PythonLogger("main")  # General python logger
     logger0 = RankZeroLoggingWrapper(logger, dist)  # Rank 0 logger
 
     # Resolve and parse configs
     OmegaConf.resolve(cfg)
+    OmegaConf.set_struct(cfg.dataset, False)
     dataset_cfg = OmegaConf.to_container(cfg.dataset)  # TODO needs better handling
+
     if hasattr(cfg, "validation_dataset"):
         validation_dataset_cfg = OmegaConf.to_container(cfg.validation_dataset)
     else:
@@ -61,12 +64,11 @@ def main(cfg: DictConfig) -> None:
     fp_optimizations = cfg.training.perf.fp_optimizations
     fp16 = fp_optimizations == "fp16"
     enable_amp = fp_optimizations.startswith("amp")
-    amp_dtype = torch.float16 if (fp_optimizations == "amp-fp16") else torch.bfloat16
+    amp_dtype = "float16" if fp_optimizations == "amp-fp16" else "bfloat16"
     logger.info(f"Saving the outputs in {os.getcwd()}")
 
     # Set seeds and configure CUDA and cuDNN settings to ensure consistent precision
     set_seed(dist.rank)
-    configure_cuda_for_consistent_precision()
 
     # Instantiate the dataset
     data_loader_kwargs = {
@@ -74,13 +76,14 @@ def main(cfg: DictConfig) -> None:
         "num_workers": cfg.training.perf.dataloader_workers,
         "prefetch_factor": 2,
     }
+
     (
         dataset,
         dataset_iterator,
         validation_dataset,
         validation_dataset_iterator,
     ) = init_train_valid_datasets_from_config(
-        dataset_cfg,
+        cfg.dataset,
         data_loader_kwargs,
         batch_size=cfg.training.hp.batch_size_per_gpu,
         seed=0,
@@ -102,7 +105,7 @@ def main(cfg: DictConfig) -> None:
     else:
         patch_shape_x = None
         patch_shape_y = None
-    patch_shape = (patch_shape_y, patch_shape_x)
+    patch_shape = patch_shape_y, patch_shape_x
     img_shape, patch_shape = set_patch_shape(img_shape, patch_shape)
     if patch_shape != img_shape:
         logger0.info("Patch-based training enabled")
@@ -138,9 +141,9 @@ def main(cfg: DictConfig) -> None:
         },
     }
     model_args.update(standard_model_cfgs[cfg.model.name])
-    if hasattr(cfg.model, "model_args"):  # override defaults from config file
+    if hasattr(cfg.model, "model_args"):
         model_args.update(OmegaConf.to_container(cfg.model.model_args))
-    if cfg.model.name == "regression":
+    if cfg.model.name == "regression":  # override defaults from config file
         model = UNet(
             img_in_channels=img_in_channels + model_args["N_grid_channels"],
             **model_args,
@@ -150,15 +153,17 @@ def main(cfg: DictConfig) -> None:
             img_in_channels=img_in_channels + model_args["N_grid_channels"],
             **model_args,
         )
-    model.train().requires_grad_(True).to(dist.device)
+    model.train()
+    for param in model.parameters():
+        param.stop_gradient = False
 
     # Enable distributed data parallel if applicable
     if dist.world_size > 1:
-        model = DistributedDataParallel(
+        model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[dist.local_rank],
             broadcast_buffers=True,
-            output_device=dist.device,
+            output_device=dist.place,
             find_unused_parameters=dist.find_unused_parameters,
         )
 
@@ -172,7 +177,9 @@ def main(cfg: DictConfig) -> None:
                 f"Expected a this regression checkpoint but not found: {regression_checkpoint_path}"
             )
         regression_net = Module.from_checkpoint(regression_checkpoint_path)
-        regression_net.eval().requires_grad_(False).to(dist.device)
+        out_1 = regression_net.eval()
+        out_1.stop_gradient = not False
+        out_1.to(dist.place)
         logger0.success("Loaded the pre-trained regression model")
 
     # Instantiate the loss function
@@ -191,8 +198,13 @@ def main(cfg: DictConfig) -> None:
         loss_fn = RegressionLoss()
 
     # Instantiate the optimizer
-    optimizer = torch.optim.Adam(
-        params=model.parameters(), lr=cfg.training.hp.lr, betas=[0.9, 0.999], eps=1e-8
+    optimizer = paddle.optimizer.Adam(
+        parameters=model.parameters(),
+        learning_rate=cfg.training.hp.lr,
+        epsilon=1e-08,
+        beta1=[0.9, 0.999][0],
+        beta2=[0.9, 0.999][1],
+        weight_decay=0.0,
     )
 
     # Record the current time to measure the duration of subsequent operations.
@@ -209,13 +221,13 @@ def main(cfg: DictConfig) -> None:
 
     ## Resume training from previous checkpoints if exists
     if dist.world_size > 1:
-        torch.distributed.barrier()
+        paddle.distributed.barrier()
     try:
         cur_nimg = load_checkpoint(
             path=f"checkpoints_{cfg.model.name}",
             models=model,
             optimizer=optimizer,
-            device=dist.device,
+            device=dist.place,
         )
     except:
         cur_nimg = 0
@@ -230,14 +242,14 @@ def main(cfg: DictConfig) -> None:
         tick_start_nimg = cur_nimg
         tick_start_time = time.time()
         # Compute & accumulate gradients
-        optimizer.zero_grad(set_to_none=True)
+        optimizer.clear_gradients(set_to_zero=not True)
         loss_accum = 0
         for _ in range(num_accumulation_rounds):
             img_clean, img_lr, labels = next(dataset_iterator)
-            img_clean = img_clean.to(dist.device).to(torch.float32).contiguous()
-            img_lr = img_lr.to(dist.device).to(torch.float32).contiguous()
-            labels = labels.to(dist.device).contiguous()
-            with torch.autocast("cuda", dtype=amp_dtype, enabled=enable_amp):
+            img_clean = paddle.to_tensor(img_clean, dtype="float32")
+            img_lr = paddle.to_tensor(img_lr, dtype="float32")
+            labels = paddle.to_tensor(labels, dtype="float32")
+            with paddle.amp.auto_cast(dtype=amp_dtype, enable=enable_amp):
                 loss = loss_fn(
                     net=model,
                     img_clean=img_clean,
@@ -249,10 +261,12 @@ def main(cfg: DictConfig) -> None:
             loss_accum += loss / num_accumulation_rounds
             loss.backward()
 
-        loss_sum = torch.tensor([loss_accum], device=dist.device)
+        loss_sum = paddle.to_tensor(data=[loss_accum], place=dist.place)
         if dist.world_size > 1:
-            torch.distributed.barrier()
-            torch.distributed.all_reduce(loss_sum, op=torch.distributed.ReduceOp.SUM)
+            paddle.distributed.barrier()
+            paddle.distributed.all_reduce(
+                tensor=loss_sum, op=paddle.distributed.ReduceOp.SUM
+            )
         average_loss = (loss_sum / dist.world_size).cpu().item()
         if dist.rank == 0:
             writer.add_scalar("training_loss", average_loss, cur_nimg)
@@ -262,7 +276,7 @@ def main(cfg: DictConfig) -> None:
         for g in optimizer.param_groups:
             if lr_rampup > 0:
                 g["lr"] = cfg.training.hp.lr * min(cur_nimg / lr_rampup, 1)
-            g["lr"] *= cfg.training.hp.lr_decay ** ((cur_nimg - lr_rampup) // 5e6)
+            g["lr"] *= cfg.training.hp.lr_decay ** ((cur_nimg - lr_rampup) // 5000000.0)
             current_lr = g["lr"]
             if dist.rank == 0:
                 writer.add_scalar("learning_rate", current_lr, cur_nimg)
@@ -284,21 +298,19 @@ def main(cfg: DictConfig) -> None:
                 cfg.training.hp.total_batch_size,
                 dist.rank,
             ):
-                with torch.no_grad():
+                with paddle.no_grad():
                     for _ in range(cfg.training.io.validation_steps):
                         img_clean_valid, img_lr_valid, labels_valid = next(
                             validation_dataset_iterator
                         )
 
                         img_clean_valid = (
-                            img_clean_valid.to(dist.device)
-                            .to(torch.float32)
-                            .contiguous()
+                            img_clean_valid.to(dist.place).to("float32").contiguous()
                         )
                         img_lr_valid = (
-                            img_lr_valid.to(dist.device).to(torch.float32).contiguous()
+                            img_lr_valid.to(dist.place).to("float32").contiguous()
                         )
-                        labels_valid = labels_valid.to(dist.device).contiguous()
+                        labels_valid = labels_valid.to(dist.place).contiguous()
                         loss_valid = loss_fn(
                             net=model,
                             img_clean=img_clean_valid,
@@ -310,13 +322,13 @@ def main(cfg: DictConfig) -> None:
                         valid_loss_accum += (
                             loss_valid / cfg.training.io.validation_steps
                         )
-                    valid_loss_sum = torch.tensor(
-                        [valid_loss_accum], device=dist.device
+                    valid_loss_sum = paddle.to_tensor(
+                        data=[valid_loss_accum], place=dist.place
                     )
                     if dist.world_size > 1:
-                        torch.distributed.barrier()
-                        torch.distributed.all_reduce(
-                            valid_loss_sum, op=torch.distributed.ReduceOp.SUM
+                        paddle.distributed.barrier()
+                        paddle.distributed.all_reduce(
+                            tensor=valid_loss_sum, op=paddle.distributed.ReduceOp.SUM
                         )
                     average_valid_loss = valid_loss_sum / dist.world_size
                     if dist.rank == 0:
@@ -338,26 +350,26 @@ def main(cfg: DictConfig) -> None:
             fields += [f"samples {cur_nimg:<9.1f}"]
             fields += [f"training_loss {average_loss:<7.2f}"]
             fields += [f"learning_rate {current_lr:<7.8f}"]
-            fields += [f"total_sec {(tick_end_time - start_time):<7.1f}"]
-            fields += [f"sec_per_tick {(tick_end_time - tick_start_time):<7.1f}"]
+            fields += [f"total_sec {tick_end_time - start_time:<7.1f}"]
+            fields += [f"sec_per_tick {tick_end_time - tick_start_time:<7.1f}"]
             fields += [
-                f"sec_per_sample {((tick_end_time - tick_start_time) / (cur_nimg - tick_start_nimg)):<7.2f}"
+                f"sec_per_sample {(tick_end_time - tick_start_time) / (cur_nimg - tick_start_nimg):<7.2f}"
             ]
             fields += [
-                f"cpu_mem_gb {(psutil.Process(os.getpid()).memory_info().rss / 2**30):<6.2f}"
+                f"cpu_mem_gb {psutil.Process(os.getpid()).memory_info().rss / 2 ** 30:<6.2f}"
             ]
             fields += [
-                f"peak_gpu_mem_gb {(torch.cuda.max_memory_allocated(dist.device) / 2**30):<6.2f}"
+                f"peak_gpu_mem_gb {paddle.device.cuda.max_memory_allocated(device=dist.place) / 2 ** 30:<6.2f}"
             ]
             fields += [
-                f"peak_gpu_mem_reserved_gb {(torch.cuda.max_memory_reserved(dist.device) / 2**30):<6.2f}"
+                f"peak_gpu_mem_reserved_gb {paddle.device.cuda.max_memory_reserved(device=dist.place) / 2 ** 30:<6.2f}"
             ]
             logger0.info(" ".join(fields))
             torch.cuda.reset_peak_memory_stats()
 
         # Save checkpoints
         if dist.world_size > 1:
-            torch.distributed.barrier()
+            paddle.distributed.barrier()
         if is_time_for_periodic_task(
             cur_nimg,
             cfg.training.io.save_checkpoint_freq,

@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
+import paddle
 import numpy as np
 from omegaconf import ListConfig
 
@@ -22,9 +22,9 @@ from omegaconf import ListConfig
 def set_patch_shape(img_shape, patch_shape):
     img_shape_y, img_shape_x = img_shape
     patch_shape_y, patch_shape_x = patch_shape
-    if (patch_shape_x is None) or (patch_shape_x > img_shape_x):
+    if patch_shape_x is None or patch_shape_x > img_shape_x:
         patch_shape_x = img_shape_x
-    if (patch_shape_y is None) or (patch_shape_y > img_shape_y):
+    if patch_shape_y is None or patch_shape_y > img_shape_y:
         patch_shape_y = img_shape_y
     if patch_shape_x != img_shape_x or patch_shape_y != img_shape_y:
         if patch_shape_x != patch_shape_y:
@@ -39,18 +39,18 @@ def set_seed(rank):
     Set seeds for NumPy and PyTorch to ensure reproducibility in distributed settings
     """
     np.random.seed(rank % (1 << 31))
-    torch.manual_seed(np.random.randint(1 << 31))
+    paddle.seed(seed=np.random.randint(1 << 31))
 
 
-def configure_cuda_for_consistent_precision():
-    """
-    Configures CUDA and cuDNN settings to ensure consistent precision by
-    disabling TensorFloat-32 (TF32) and reduced precision settings.
-    """
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.allow_tf32 = False
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+# def configure_cuda_for_consistent_precision():
+#     """
+#     Configures CUDA and cuDNN settings to ensure consistent precision by
+#     disabling TensorFloat-32 (TF32) and reduced precision settings.
+#     """
+#     False = True
+#     True = False
+# >>>>>>    torch.backends.cuda.matmul.allow_tf32 = False
+# >>>>>>    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
 
 
 def compute_num_accumulation_rounds(total_batch_size, batch_size_per_gpu, world_size):
@@ -81,18 +81,23 @@ def handle_and_clip_gradients(model, grad_clip_threshold=None):
     # Replace NaNs and infinities in gradients
     for param in model.parameters():
         if param.grad is not None:
-            torch.nan_to_num(
-                param.grad, nan=0.0, posinf=1e5, neginf=-1e5, out=param.grad
+            paddle.assign(
+                paddle.nan_to_num(
+                    x=param.grad, nan=0.0, posinf=100000.0, neginf=-100000.0
+                ),
+                output=param.grad,
             )
 
     # Clip gradients if a threshold is provided
     if grad_clip_threshold is not None:
-        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip_threshold)
+        paddle.nn.utils.clip_grad_norm_(
+            parameters=model.parameters(), max_norm=grad_clip_threshold
+        )
 
 
 def parse_model_args(args):
     """Convert ListConfig values in args to tuples."""
-    return {k: tuple(v) if isinstance(v, ListConfig) else v for k, v in args.items()}
+    return {k: (tuple(v) if isinstance(v, ListConfig) else v) for k, v in args.items()}
 
 
 def is_time_for_periodic_task(

@@ -14,12 +14,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import paddle
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import List, Tuple
-
 import numpy as np
-import torch
 
 
 @dataclass
@@ -31,7 +30,7 @@ class ChannelMetadata:
     auxiliary: bool = False
 
 
-class DownscalingDataset(torch.utils.data.Dataset, ABC):
+class DownscalingDataset(paddle.io.Dataset, ABC):
     """An abstract class that defines the interface for downscaling datasets."""
 
     @abstractmethod

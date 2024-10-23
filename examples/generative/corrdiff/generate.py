@@ -14,11 +14,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
+
+sys.path.append("/workspace/workspace/modulus-sym")
+import paddle
 import hydra
 from omegaconf import OmegaConf, DictConfig
-import torch
-import torch._dynamo
 import nvtx
+import json
 import numpy as np
 import netCDF4 as nc
 from modulus.distributed import DistributedManager
@@ -27,11 +30,11 @@ from modulus import Module
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from einops import rearrange
-from torch.distributed import gather
-
 
 from hydra.utils import to_absolute_path
 from modulus.utils.generative import deterministic_sampler, stochastic_sampler
+from modulus.models.diffusion.preconditioning import EDMPrecondSR
+from modulus.models.diffusion.unet import UNet
 from modulus.utils.corrdiff import (
     NetCDFWriter,
     get_time_from_range,
@@ -39,11 +42,7 @@ from modulus.utils.corrdiff import (
     diffusion_step,
 )
 
-
-from helpers.generate_helpers import (
-    get_dataset_and_sampler,
-    save_images,
-)
+from helpers.generate_helpers import get_dataset_and_sampler, save_images
 from helpers.train_helpers import set_patch_shape
 
 
@@ -68,12 +67,13 @@ def main(cfg: DictConfig) -> None:
     num_batches = (
         (len(seeds) - 1) // (cfg.generation.seed_batch_size * dist.world_size) + 1
     ) * dist.world_size
-    all_batches = torch.as_tensor(seeds).tensor_split(num_batches)
+
+    all_batches = paddle.to_tensor(data=seeds).tensor_split(num_or_indices=num_batches)
     rank_batches = all_batches[dist.rank :: dist.world_size]
 
     # Synchronize
     if dist.world_size > 1:
-        torch.distributed.barrier()
+        paddle.distributed.barrier()
 
     # Parse the inference input times
     if cfg.generation.times_range and times:
@@ -90,7 +90,7 @@ def main(cfg: DictConfig) -> None:
     img_out_channels = len(dataset.output_channels())
 
     # Parse the patch shape
-    if hasattr(cfg, "training.hp.patch_shape_x"):  # TODO better config handling
+    if hasattr(cfg, "training.hp.patch_shape_x"):
         patch_shape_x = cfg.training.hp.patch_shape_x
     else:
         patch_shape_x = None
@@ -98,7 +98,7 @@ def main(cfg: DictConfig) -> None:
         patch_shape_y = cfg.training.hp.patch_shape_y
     else:
         patch_shape_y = None
-    patch_shape = (patch_shape_y, patch_shape_x)
+    patch_shape = patch_shape_y, patch_shape_x
     img_shape, patch_shape = set_patch_shape(img_shape, patch_shape)
     if patch_shape != img_shape:
         logger0.info("Patch-based training enabled")
@@ -119,8 +119,17 @@ def main(cfg: DictConfig) -> None:
     if load_net_res:
         res_ckpt_filename = cfg.generation.io.res_ckpt_filename
         logger0.info(f'Loading residual network from "{res_ckpt_filename}"...')
-        net_res = Module.from_checkpoint(to_absolute_path(res_ckpt_filename))
-        net_res = net_res.eval().to(device).to(memory_format=torch.channels_last)
+        with open(
+            "/workspace/workspace/modulus/examples/generative/corrdiff/corrdiff_inference_package/checkpoints/d/args.json",
+            "r",
+        ) as f:
+            args = json.load(f)
+        net_res = EDMPrecondSR(**args["__args__"])
+        model_dict = paddle.load(
+            path="/workspace/workspace/modulus/examples/generative/corrdiff/corrdiff_inference_package/checkpoints/diffusion.pdparams"
+        )
+        net_res.load_dict(model_dict)
+        net_res.eval()
         if cfg.generation.perf.force_fp16:
             net_res.use_fp16 = True
     else:
@@ -130,20 +139,21 @@ def main(cfg: DictConfig) -> None:
     if load_net_reg:
         reg_ckpt_filename = cfg.generation.io.reg_ckpt_filename
         logger0.info(f'Loading network from "{reg_ckpt_filename}"...')
-        net_reg = Module.from_checkpoint(to_absolute_path(reg_ckpt_filename))
-        net_reg = net_reg.eval().to(device).to(memory_format=torch.channels_last)
+        with open(
+            "/workspace/workspace/modulus/examples/generative/corrdiff/corrdiff_inference_package/checkpoints/r/args.json",
+            "r",
+        ) as f:
+            args = json.load(f)
+        net_reg = UNet(**args["__args__"])
+        model_dict = paddle.load(
+            path="/workspace/workspace/modulus/examples/generative/corrdiff/corrdiff_inference_package/checkpoints/regression.pdparams"
+        )
+        net_reg.load_dict(model_dict)
+        net_reg.eval()
         if cfg.generation.perf.force_fp16:
             net_reg.use_fp16 = True
     else:
         net_reg = None
-
-    # Reset since we are using a different mode.
-    if cfg.generation.perf.use_torch_compile:
-        torch._dynamo.reset()
-        # Only compile residual network
-        # Overhead of compiling regression network outweights any benefits
-        if net_res:
-            net_res = torch.compile(net_res, mode="reduce-overhead")
 
     # Partially instantiate the sampler based on the configs
     if cfg.sampler.type == "deterministic":
@@ -154,7 +164,6 @@ def main(cfg: DictConfig) -> None:
         sampler_fn = partial(
             deterministic_sampler,
             num_steps=cfg.sampler.num_steps,
-            # num_ensembles=cfg.generation.num_ensembles,
             solver=cfg.sampler.solver,
         )
     elif cfg.sampler.type == "stochastic":
@@ -175,15 +184,15 @@ def main(cfg: DictConfig) -> None:
             if cfg.generation.sample_res == "full":
                 image_lr_patch = image_lr
             else:
-                torch.cuda.nvtx.range_push("rearrange")
+                paddle.framework.core.nvprof_nvtx_push("rearrange")
                 image_lr_patch = rearrange(
                     image_lr,
                     "b c (h1 h) (w1 w) -> (b h1 w1) c h w",
                     h1=img_shape_y // patch_shape[0],
                     w1=img_shape_x // patch_shape[1],
                 )
-                torch.cuda.nvtx.range_pop()
-            image_lr_patch = image_lr_patch.to(memory_format=torch.channels_last)
+                paddle.framework.core.nvprof_nvtx_pop()
+            # image_lr_patch = paddle.transpose(image_lr_patch, perm=[0, 3, 1, 2])
 
             if net_reg:
                 with nvtx.annotate("regression_model", color="yellow"):
@@ -211,8 +220,8 @@ def main(cfg: DictConfig) -> None:
                         img_out_channels=img_out_channels,
                         rank_batches=rank_batches,
                         img_lr=image_lr_patch.expand(
-                            cfg.generation.seed_batch_size, -1, -1, -1
-                        ).to(memory_format=torch.channels_last),
+                            shape=[cfg.generation.seed_batch_size, -1, -1, -1]
+                        ),
                         rank=dist.rank,
                         device=device,
                         hr_mean=mean_hr,
@@ -236,23 +245,21 @@ def main(cfg: DictConfig) -> None:
             if dist.world_size > 1:
                 if dist.rank == 0:
                     gathered_tensors = [
-                        torch.zeros_like(
-                            image_out, dtype=image_out.dtype, device=image_out.device
-                        )
+                        paddle.zeros_like(x=image_out, dtype=image_out.dtype)
                         for _ in range(dist.world_size)
                     ]
                 else:
                     gathered_tensors = None
 
-                torch.distributed.barrier()
-                gather(
-                    image_out,
+                paddle.distributed.barrier()
+                paddle.distributed.gather(
+                    tensor=image_out,
                     gather_list=gathered_tensors if dist.rank == 0 else None,
                     dst=0,
                 )
 
                 if dist.rank == 0:
-                    return torch.cat(gathered_tensors)
+                    return paddle.concat(x=gathered_tensors)
                 else:
                     return None
             else:
@@ -269,85 +276,75 @@ def main(cfg: DictConfig) -> None:
     with nc.Dataset(f"output_{dist.rank}.nc", "w") as f:
         # add attributes
         f.cfg = str(cfg)
-        with torch.cuda.profiler.profile():
-            with torch.autograd.profiler.emit_nvtx():
 
-                data_loader = torch.utils.data.DataLoader(
-                    dataset=dataset, sampler=sampler, batch_size=1, pin_memory=True
+        data_loader = paddle.io.DataLoader(dataset=dataset, batch_size=1)
+        time_index = -1
+        writer = NetCDFWriter(
+            f,
+            lat=dataset.latitude(),
+            lon=dataset.longitude(),
+            input_channels=dataset.input_channels(),
+            output_channels=dataset.output_channels(),
+        )
+        warmup_steps = 2
+
+        start = paddle.device.Event(enable_timing=True)
+        end = paddle.device.Event(enable_timing=True)
+
+        # Initialize threadpool for writers
+        writer_executor = ThreadPoolExecutor(
+            max_workers=cfg.generation.perf.num_writer_workers
+        )
+        writer_threads = []
+
+        times = dataset.time()
+        for image_tar, image_lr, index in iter(data_loader):
+            time_index += 1
+            if dist.rank == 0:
+                logger0.info(f"starting index: {time_index}")
+
+            if time_index == warmup_steps:
+                start.record()
+
+            # continue
+            image_lr = paddle.to_tensor(image_lr, dtype="float32")
+            image_tar = paddle.to_tensor(image_tar, dtype="float32")
+            image_out = generate_fn()
+
+            if dist.rank == 0:
+                batch_size = tuple(image_out.shape)[0]
+                # write out data in a seperate thread so we don't hold up inferencing
+                writer_threads.append(
+                    writer_executor.submit(
+                        save_images,
+                        writer,
+                        dataset,
+                        list(times),
+                        image_out.cpu(),
+                        image_tar.cpu(),
+                        image_lr.cpu(),
+                        time_index,
+                        index[0],
+                    )
                 )
-                time_index = -1
-                writer = NetCDFWriter(
-                    f,
-                    lat=dataset.latitude(),
-                    lon=dataset.longitude(),
-                    input_channels=dataset.input_channels(),
-                    output_channels=dataset.output_channels(),
-                )
-                warmup_steps = 2
+        end.record()
+        end.synchronize()
+        elapsed_time = start.elapsed_time(end) / 1000.0
+        timed_steps = time_index + 1 - warmup_steps
+        if dist.rank == 0:
+            average_time_per_batch_element = elapsed_time / timed_steps / batch_size
+            logger.info(
+                f"Total time to run {timed_steps} and {batch_size} ensembles = {elapsed_time} s"
+            )
+            logger.info(
+                f"Average time per batch element = {average_time_per_batch_element} s"
+            )
 
-                start = torch.cuda.Event(enable_timing=True)
-                end = torch.cuda.Event(enable_timing=True)
-
-                # Initialize threadpool for writers
-                writer_executor = ThreadPoolExecutor(
-                    max_workers=cfg.generation.perf.num_writer_workers
-                )
-                writer_threads = []
-
-                times = dataset.time()
-                for image_tar, image_lr, index in iter(data_loader):
-                    time_index += 1
-                    if dist.rank == 0:
-                        logger0.info(f"starting index: {time_index}")
-
-                    if time_index == warmup_steps:
-                        start.record()
-
-                    # continue
-                    image_lr = (
-                        image_lr.to(device=device)
-                        .to(torch.float32)
-                        .to(memory_format=torch.channels_last)
-                    )
-                    image_tar = image_tar.to(device=device).to(torch.float32)
-                    image_out = generate_fn()
-
-                    if dist.rank == 0:
-                        batch_size = image_out.shape[0]
-                        # write out data in a seperate thread so we don't hold up inferencing
-                        writer_threads.append(
-                            writer_executor.submit(
-                                save_images,
-                                writer,
-                                dataset,
-                                list(times),
-                                image_out.cpu(),
-                                image_tar.cpu(),
-                                image_lr.cpu(),
-                                time_index,
-                                index[0],
-                            )
-                        )
-                end.record()
-                end.synchronize()
-                elapsed_time = start.elapsed_time(end) / 1000.0  # Convert ms to s
-                timed_steps = time_index + 1 - warmup_steps
-                if dist.rank == 0:
-                    average_time_per_batch_element = (
-                        elapsed_time / timed_steps / batch_size
-                    )
-                    logger.info(
-                        f"Total time to run {timed_steps} and {batch_size} ensembles = {elapsed_time} s"
-                    )
-                    logger.info(
-                        f"Average time per batch element = {average_time_per_batch_element} s"
-                    )
-
-                # make sure all the workers are done writing
-                for thread in list(writer_threads):
-                    thread.result()
-                    writer_threads.remove(thread)
-                writer_executor.shutdown()
+        # make sure all the workers are done writing
+        for thread in list(writer_threads):
+            thread.result()
+            writer_threads.remove(thread)
+        writer_executor.shutdown()
 
     logger0.info("Generation Completed.")
 

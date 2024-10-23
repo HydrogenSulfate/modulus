@@ -33,7 +33,7 @@ from typing import Any, List, Tuple, Union
 
 import cftime
 import numpy as np
-import torch
+import paddle
 
 # ruff: noqa: E722 PERF203 S110 E713 S324
 
@@ -66,7 +66,10 @@ class StackedRandomGenerator:  # pragma: no cover
     def __init__(self, device, seeds):
         super().__init__()
         self.generators = [
-            torch.Generator(device).manual_seed(int(seed) % (1 << 32)) for seed in seeds
+            paddle.framework.core.default_cpu_generator().manual_seed(
+                int(seed) % (1 << 32)
+            )
+            for seed in seeds
         ]
 
     def randn(self, size, **kwargs):
@@ -74,23 +77,21 @@ class StackedRandomGenerator:  # pragma: no cover
             raise ValueError(
                 f"Expected first dimension of size {len(self.generators)}, got {size[0]}"
             )
-        return torch.stack(
-            [torch.randn(size[1:], generator=gen, **kwargs) for gen in self.generators]
+        return paddle.stack(
+            x=[paddle.randn(size[1:], **kwargs) for gen in self.generators]
         )
 
     def randn_like(self, input):
-        return self.randn(
-            input.shape, dtype=input.dtype, layout=input.layout, device=input.device
-        )
+        return self.randn(tuple(input.shape), dtype=input.dtype)
 
     def randint(self, *args, size, **kwargs):
         if size[0] != len(self.generators):
             raise ValueError(
                 f"Expected first dimension of size {len(self.generators)}, got {size[0]}"
             )
-        return torch.stack(
-            [
-                torch.randint(*args, size=size[1:], generator=gen, **kwargs)
+        return paddle.stack(
+            x=[
+                paddle.randint(*args, size=size[1:], **kwargs)
                 for gen in self.generators
             ]
         )
@@ -104,7 +105,7 @@ def parse_int_list(s):  # pragma: no cover
     if isinstance(s, list):
         return s
     ranges = []
-    range_re = re.compile(r"^(\d+)-(\d+)$")
+    range_re = re.compile("^(\\d+)-(\\d+)$")
     for p in s.split(","):
         m = range_re.match(p)
         if m:
@@ -131,28 +132,28 @@ def time_range(
 ):
     """Like the Python `range` iterator, but with datetimes."""
     t = start_time
-    while (t <= end_time) if inclusive else (t < end_time):
+    while t <= end_time if inclusive else t < end_time:
         yield t
         t += step
 
 
-def format_time(seconds: Union[int, float]) -> str:  # pragma: no cover
+def format_time(seconds: Union[int, float]) -> str:
     """Convert the seconds to human readable string with days, hours, minutes and seconds."""
-    s = int(np.rint(seconds))
 
+    s = int(np.rint(seconds))
     if s < 60:
         return "{0}s".format(s)
     elif s < 60 * 60:
         return "{0}m {1:02}s".format(s // 60, s % 60)
     elif s < 24 * 60 * 60:
-        return "{0}h {1:02}m {2:02}s".format(s // (60 * 60), (s // 60) % 60, s % 60)
+        return "{0}h {1:02}m {2:02}s".format(s // (60 * 60), s // 60 % 60, s % 60)
     else:
         return "{0}d {1:02}h {2:02}m".format(
-            s // (24 * 60 * 60), (s // (60 * 60)) % 24, (s // 60) % 60
+            s // (24 * 60 * 60), s // (60 * 60) % 24, s // 60 % 60
         )
 
 
-def format_time_brief(seconds: Union[int, float]) -> str:  # pragma: no cover
+def format_time_brief(seconds: Union[int, float]) -> str:
     """Convert the seconds to human readable string with days, hours, minutes and seconds."""
     s = int(np.rint(seconds))
 
@@ -161,12 +162,12 @@ def format_time_brief(seconds: Union[int, float]) -> str:  # pragma: no cover
     elif s < 60 * 60:
         return "{0}m {1:02}s".format(s // 60, s % 60)
     elif s < 24 * 60 * 60:
-        return "{0}h {1:02}m".format(s // (60 * 60), (s // 60) % 60)
+        return "{0}h {1:02}m".format(s // (60 * 60), s // 60 % 60)
     else:
-        return "{0}d {1:02}h".format(s // (24 * 60 * 60), (s // (60 * 60)) % 24)
+        return "{0}d {1:02}h".format(s // (24 * 60 * 60), s // (60 * 60) % 24)
 
 
-def tuple_product(t: Tuple) -> Any:  # pragma: no cover
+def tuple_product(t: Tuple) -> Any:
     """Calculate the product of the tuple elements."""
     result = 1
 
@@ -190,7 +191,7 @@ _str_to_ctype = {
 }
 
 
-def get_dtype_and_ctype(type_obj: Any) -> Tuple[np.dtype, Any]:  # pragma: no cover
+def get_dtype_and_ctype(type_obj: Any) -> Tuple[np.dtype, Any]:
     """
     Given a type name string (or an object having a __name__ attribute), return
     matching Numpy and ctypes types that have the same size in bytes.
@@ -224,9 +225,7 @@ def get_dtype_and_ctype(type_obj: Any) -> Tuple[np.dtype, Any]:  # pragma: no co
 # -------------------------------------------------------------------------------------
 
 
-def get_module_from_obj_name(
-    obj_name: str,
-) -> Tuple[types.ModuleType, str]:  # pragma: no cover
+def get_module_from_obj_name(obj_name: str) -> Tuple[types.ModuleType, str]:
     """
     Searches for the underlying module behind the name to some python object.
     Returns the module and the object name (original name with module part removed).
@@ -273,9 +272,7 @@ def get_module_from_obj_name(
     raise ImportError(obj_name)
 
 
-def get_obj_from_module(
-    module: types.ModuleType, obj_name: str
-) -> Any:  # pragma: no cover
+def get_obj_from_module(module: types.ModuleType, obj_name: str) -> Any:
     """
     Traverses the object name and returns the last (rightmost) python object.
     """
@@ -287,7 +284,7 @@ def get_obj_from_module(
     return obj
 
 
-def get_obj_by_name(name: str) -> Any:  # pragma: no cover
+def get_obj_by_name(name: str) -> Any:
     """
     Finds the python object with the given name.
     """
@@ -295,9 +292,7 @@ def get_obj_by_name(name: str) -> Any:  # pragma: no cover
     return get_obj_from_module(module, obj_name)
 
 
-def call_func_by_name(
-    *args, func_name: str = None, **kwargs
-) -> Any:  # pragma: no cover
+def call_func_by_name(*args, func_name: str = None, **kwargs) -> Any:
     """
     Finds the python object with the given name and calls it as a function.
     """
@@ -309,9 +304,7 @@ def call_func_by_name(
     return func_obj(*args, **kwargs)
 
 
-def construct_class_by_name(
-    *args, class_name: str = None, **kwargs
-) -> Any:  # pragma: no cover
+def construct_class_by_name(*args, class_name: str = None, **kwargs) -> Any:
     """
     Finds the python class with the given name and constructs it with the given
     arguments.
@@ -319,7 +312,7 @@ def construct_class_by_name(
     return call_func_by_name(*args, func_name=class_name, **kwargs)
 
 
-def get_module_dir_by_obj_name(obj_name: str) -> str:  # pragma: no cover
+def get_module_dir_by_obj_name(obj_name: str) -> str:
     """
     Get the directory path of the module containing the given object name.
     """
@@ -327,7 +320,7 @@ def get_module_dir_by_obj_name(obj_name: str) -> str:  # pragma: no cover
     return os.path.dirname(inspect.getfile(module))
 
 
-def is_top_level_function(obj: Any) -> bool:  # pragma: no cover
+def is_top_level_function(obj: Any) -> bool:
     """
     Determine whether the given object is a top-level function, i.e., defined at module
     scope using 'def'.
@@ -335,7 +328,7 @@ def is_top_level_function(obj: Any) -> bool:  # pragma: no cover
     return callable(obj) and obj.__name__ in sys.modules[obj.__module__].__dict__
 
 
-def get_top_level_function_name(obj: Any) -> str:  # pragma: no cover
+def get_top_level_function_name(obj: Any) -> str:
     """
     Return the fully-qualified name of a top-level function.
     """
@@ -353,7 +346,7 @@ def get_top_level_function_name(obj: Any) -> str:  # pragma: no cover
 
 def list_dir_recursively_with_ignore(
     dir_path: str, ignores: List[str] = None, add_base_to_relative: bool = False
-) -> List[Tuple[str, str]]:  # pragma: no cover
+) -> List[Tuple[str, str]]:
     """
     List all files recursively in a given directory while ignoring given file and
     directory names. Returns list of tuples containing both absolute and relative paths.
@@ -390,9 +383,7 @@ def list_dir_recursively_with_ignore(
     return result
 
 
-def copy_files_and_create_dirs(
-    files: List[Tuple[str, str]]
-) -> None:  # pragma: no cover
+def copy_files_and_create_dirs(files: List[Tuple[str, str]]) -> None:
     """
     Takes in a list of tuples of (src, dst) paths and copies files.
     Will create all necessary directories.
@@ -414,22 +405,20 @@ def copy_files_and_create_dirs(
 _constant_cache = dict()
 
 
-def constant(
-    value, shape=None, dtype=None, device=None, memory_format=None
-):  # pragma: no cover
+def constant(value, shape=None, dtype=None, device=None, memory_format=None):
     """Cached construction of constant tensors"""
     value = np.asarray(value)
     if shape is not None:
         shape = tuple(shape)
     if dtype is None:
-        dtype = torch.get_default_dtype()
+        dtype = paddle.get_default_dtype()
     if device is None:
-        device = torch.device("cpu")
-    if memory_format is None:
-        memory_format = torch.contiguous_format
+        device = paddle.CPUPlace()
+    # if memory_format is None:
+    #     memory_format = torch.contiguous_format
 
     key = (
-        value.shape,
+        tuple(value.shape),
         value.dtype,
         value.tobytes(),
         shape,
@@ -439,10 +428,12 @@ def constant(
     )
     tensor = _constant_cache.get(key, None)
     if tensor is None:
-        tensor = torch.as_tensor(value.copy(), dtype=dtype, device=device)
+        tensor = paddle.to_tensor(data=value.copy(), dtype=dtype, place=device)
         if shape is not None:
-            tensor, _ = torch.broadcast_tensors(tensor, torch.empty(shape))
-        tensor = tensor.contiguous(memory_format=memory_format)
+            tensor, _ = paddle.broadcast_tensors(
+                input=[tensor, paddle.empty(shape=shape)]
+            )
+        tensor = tensor.contiguous()
         _constant_cache[key] = tensor
     return tensor
 
@@ -451,33 +442,28 @@ def constant(
 # Replace NaN/Inf with specified numerical values.
 
 try:
-    nan_to_num = torch.nan_to_num  # 1.8.0a0
+    nan_to_num = paddle.nan_to_num  # 1.8.0a0
 except AttributeError:
 
     def nan_to_num(
         input, nan=0.0, posinf=None, neginf=None, *, out=None
     ):  # pylint: disable=redefined-builtin  # pragma: no cover
         """Replace NaN/Inf with specified numerical values"""
-        if not isinstance(input, torch.Tensor):
+        if not isinstance(input, paddle.Tensor):
             raise TypeError("input should be a Tensor")
         if posinf is None:
-            posinf = torch.finfo(input.dtype).max
+            posinf = paddle.finfo(dtype=input.dtype).max
         if neginf is None:
-            neginf = torch.finfo(input.dtype).min
+            neginf = paddle.finfo(dtype=input.dtype).min
         if nan != 0:
             raise ValueError("nan_to_num only supports nan=0")
-        return torch.clamp(
-            input.unsqueeze(0).nansum(0), min=neginf, max=posinf, out=out
+        return paddle.assign(
+            paddle.clip(
+                x=input.unsqueeze(axis=0).nansum(axis=0), min=neginf, max=posinf
+            ),
+            output=out,
         )
 
-
-# ----------------------------------------------------------------------------
-# Symbolic assert.
-
-try:
-    symbolic_assert = torch._assert  # 1.8.0a0 # pylint: disable=protected-access
-except AttributeError:
-    symbolic_assert = torch.Assert  # 1.7.0
 
 # ----------------------------------------------------------------------------
 # Context manager to temporarily suppress known warnings in torch.jit.trace().
@@ -485,12 +471,12 @@ except AttributeError:
 
 
 @contextlib.contextmanager
-def suppress_tracer_warnings():  # pragma: no cover
+def suppress_tracer_warnings():
     """
     Context manager to temporarily suppress known warnings in torch.jit.trace().
     Note: Cannot use catch_warnings because of https://bugs.python.org/issue29672
     """
-    flt = ("ignore", None, torch.jit.TracerWarning, None, 0)
+    flt = "ignore", None  # torch.jit.TracerWarning, None, 0
     warnings.filters.insert(0, flt)
     yield
     warnings.filters.remove(flt)
@@ -502,7 +488,7 @@ def suppress_tracer_warnings():  # pragma: no cover
 # Performs symbolic assertion when used in torch.jit.trace().
 
 
-def assert_shape(tensor, ref_shape):  # pragma: no cover
+def assert_shape(tensor, ref_shape):
     """
     Assert that the shape of a tensor matches the given list of integers.
     None indicates that the size of a dimension is allowed to vary.
@@ -512,21 +498,21 @@ def assert_shape(tensor, ref_shape):  # pragma: no cover
         raise AssertionError(
             f"Wrong number of dimensions: got {tensor.ndim}, expected {len(ref_shape)}"
         )
-    for idx, (size, ref_size) in enumerate(zip(tensor.shape, ref_shape)):
+    for idx, (size, ref_size) in enumerate(zip(tuple(tensor.shape), ref_shape)):
         if ref_size is None:
             pass
-        elif isinstance(ref_size, torch.Tensor):
-            with suppress_tracer_warnings():  # as_tensor results are registered as constants
-                symbolic_assert(
-                    torch.equal(torch.as_tensor(size), ref_size),
-                    f"Wrong size for dimension {idx}",
-                )
-        elif isinstance(size, torch.Tensor):
-            with suppress_tracer_warnings():  # as_tensor results are registered as constants
-                symbolic_assert(
-                    torch.equal(size, torch.as_tensor(ref_size)),
-                    f"Wrong size for dimension {idx}: expected {ref_size}",
-                )
+        # elif isinstance(ref_size, paddle.Tensor):
+        #     with suppress_tracer_warnings():  # as_tensor results are registered as constants
+        #         symbolic_assert(
+        #             paddle.equal_all(x=paddle.to_tensor(data=size), y=ref_size).item(),
+        #             f"Wrong size for dimension {idx}",
+        #         )
+        # elif isinstance(size, paddle.Tensor):
+        #     with suppress_tracer_warnings():  # as_tensor results are registered as constants
+        #         symbolic_assert(
+        #             paddle.equal_all(x=size, y=paddle.to_tensor(data=ref_size)).item(),
+        #             f"Wrong size for dimension {idx}: expected {ref_size}",
+        #         )
         elif size != ref_size:
             raise AssertionError(
                 f"Wrong size for dimension {idx}: got {size}, expected {ref_size}"
@@ -537,12 +523,12 @@ def assert_shape(tensor, ref_shape):  # pragma: no cover
 # Function decorator that calls torch.autograd.profiler.record_function().
 
 
-def profiled_function(fn):  # pragma: no cover
+def profiled_function(fn):
     """Function decorator that calls torch.autograd.profiler.record_function()."""
 
     def decorator(*args, **kwargs):
-        with torch.autograd.profiler.record_function(fn.__name__):
-            return fn(*args, **kwargs)
+        # with torch.autograd.profiler.record_function(fn.__name__):
+        return fn(*args, **kwargs)
 
     decorator.__name__ = fn.__name__
     return decorator
@@ -553,7 +539,7 @@ def profiled_function(fn):  # pragma: no cover
 # indefinitely, shuffling items as it goes.
 
 
-class InfiniteSampler(torch.utils.data.Sampler):  # pragma: no cover
+class InfiniteSampler(paddle.io.Sampler):
     """
     Sampler for torch.utils.data.DataLoader that loops over the dataset
     indefinitely, shuffling items as it goes.
@@ -602,35 +588,33 @@ class InfiniteSampler(torch.utils.data.Sampler):  # pragma: no cover
 # Utilities for operating with torch.nn.Layer parameters and buffers.
 
 
-def params_and_buffers(module):  # pragma: no cover
+def params_and_buffers(module):
     """Get parameters and buffers of a nn.Layer"""
-    if not isinstance(module, torch.nn.Layer):
-        raise TypeError("module must be a torch.nn.Layer instance")
+    if not isinstance(module, paddle.nn.Layer):
+        raise TypeError("module must be a paddle.nn.Layer instance")
     return list(module.parameters()) + list(module.buffers())
 
 
-def named_params_and_buffers(module):  # pragma: no cover
+def named_params_and_buffers(module):
     """Get named parameters and buffers of a nn.Layer"""
-    if not isinstance(module, torch.nn.Layer):
-        raise TypeError("module must be a torch.nn.Layer instance")
+    if not isinstance(module, paddle.nn.Layer):
+        raise TypeError("module must be a paddle.nn.Layer instance")
     return list(module.named_parameters()) + list(module.named_buffers())
 
 
-@torch.no_grad()
-def copy_params_and_buffers(
-    src_module, dst_module, require_all=False
-):  # pragma: no cover
+@paddle.no_grad()
+def copy_params_and_buffers(src_module, dst_module, require_all=False):
     """Copy parameters and buffers from a source module to target module"""
-    if not isinstance(src_module, torch.nn.Layer):
-        raise TypeError("src_module must be a torch.nn.Layer instance")
-    if not isinstance(dst_module, torch.nn.Layer):
-        raise TypeError("dst_module must be a torch.nn.Layer instance")
+    if not isinstance(src_module, paddle.nn.Layer):
+        raise TypeError("src_module must be a paddle.nn.Layer instance")
+    if not isinstance(dst_module, paddle.nn.Layer):
+        raise TypeError("dst_module must be a paddle.nn.Layer instance")
     src_tensors = dict(named_params_and_buffers(src_module))
     for name, tensor in named_params_and_buffers(dst_module):
-        if not ((name in src_tensors) or (not require_all)):
+        if not (name in src_tensors or not require_all):
             raise ValueError(f"Missing source tensor for {name}")
         if name in src_tensors:
-            tensor.copy_(src_tensors[name])
+            paddle.assign(src_tensors[name], output=tensor)
 
 
 # ----------------------------------------------------------------------------
@@ -639,14 +623,14 @@ def copy_params_and_buffers(
 
 
 @contextlib.contextmanager
-def ddp_sync(module, sync):  # pragma: no cover
+def ddp_sync(module, sync):
     """
     Context manager for easily enabling/disabling DistributedDataParallel
     synchronization.
     """
-    if not isinstance(module, torch.nn.Layer):
-        raise TypeError("module must be a torch.nn.Layer instance")
-    if sync or not isinstance(module, torch.nn.parallel.DistributedDataParallel):
+    if not isinstance(module, paddle.nn.Layer):
+        raise TypeError("module must be a paddle.nn.Layer instance")
+    if sync or not isinstance(module, paddle.DataParallel):
         yield
     else:
         with module.no_sync():
@@ -657,10 +641,10 @@ def ddp_sync(module, sync):  # pragma: no cover
 # Check DistributedDataParallel consistency across processes.
 
 
-def check_ddp_consistency(module, ignore_regex=None):  # pragma: no cover
+def check_ddp_consistency(module, ignore_regex=None):
     """Check DistributedDataParallel consistency across processes."""
-    if not isinstance(module, torch.nn.Layer):
-        raise TypeError("module must be a torch.nn.Layer instance")
+    if not isinstance(module, paddle.nn.Layer):
+        raise TypeError("module must be a paddle.nn.Layer instance")
     for name, tensor in named_params_and_buffers(module):
         fullname = type(module).__name__ + "." + name
         if ignore_regex is not None and re.fullmatch(ignore_regex, fullname):
@@ -669,8 +653,8 @@ def check_ddp_consistency(module, ignore_regex=None):  # pragma: no cover
         if tensor.is_floating_point():
             tensor = nan_to_num(tensor)
         other = tensor.clone()
-        torch.distributed.broadcast(tensor=other, src=0)
-        if not (tensor == other).all():
+        paddle.distributed.broadcast(tensor=other, src=0)
+        if not (tensor == other).astype("bool").all():
             raise RuntimeError(f"DDP consistency check failed for {fullname}")
 
 
@@ -678,14 +662,12 @@ def check_ddp_consistency(module, ignore_regex=None):  # pragma: no cover
 # Print summary table of module hierarchy.
 
 
-def print_module_summary(
-    module, inputs, max_nesting=3, skip_redundant=True
-):  # pragma: no cover
+def print_module_summary(module, inputs, max_nesting=3, skip_redundant=True):
     """Print summary table of module hierarchy."""
-    if not isinstance(module, torch.nn.Layer):
-        raise TypeError("module must be a torch.nn.Layer instance")
-    if isinstance(module, torch.jit.ScriptModule):
-        raise TypeError("module must not be a torch.jit.ScriptModule instance")
+    if not isinstance(module, paddle.nn.Layer):
+        raise TypeError("module must be a paddle.nn.Layer instance")
+    # if isinstance(module, torch.jit.ScriptModule):
+    #     raise TypeError("module must not be a torch.jit.ScriptModule instance")
     if not isinstance(inputs, (tuple, list)):
         raise TypeError("inputs must be a tuple or list")
 
@@ -700,11 +682,13 @@ def print_module_summary(
         nesting[0] -= 1
         if nesting[0] <= max_nesting:
             outputs = list(outputs) if isinstance(outputs, (tuple, list)) else [outputs]
-            outputs = [t for t in outputs if isinstance(t, torch.Tensor)]
+            outputs = [t for t in outputs if isinstance(t, paddle.Tensor)]
             entries.append(EasyDict(mod=mod, outputs=outputs))
 
-    hooks = [mod.register_forward_pre_hook(pre_hook) for mod in module.modules()]
-    hooks += [mod.register_forward_hook(post_hook) for mod in module.modules()]
+    hooks = [mod.register_forward_pre_hook(hook=pre_hook) for mod in module.sublayers()]
+    hooks += [
+        mod.register_forward_post_hook(hook=post_hook) for mod in module.sublayers()
+    ]
 
     # Run module.
     outputs = module(*inputs)
@@ -736,12 +720,12 @@ def print_module_summary(
     rows += [["---"] * len(rows[0])]
     param_total = 0
     buffer_total = 0
-    submodule_names = {mod: name for name, mod in module.named_modules()}
+    submodule_names = {mod: name for name, mod in module.named_sublayers()}
     for e in entries:
         name = "<top-level>" if e.mod is module else submodule_names[e.mod]
-        param_size = sum(t.numel() for t in e.unique_params)
-        buffer_size = sum(t.numel() for t in e.unique_buffers)
-        output_shapes = [str(list(t.shape)) for t in e.outputs]
+        param_size = sum(t.size for t in e.unique_params)
+        buffer_size = sum(t.size for t in e.unique_buffers)
+        output_shapes = [str(list(tuple(t.shape))) for t in e.outputs]
         output_dtypes = [str(t.dtype).split(".")[-1] for t in e.outputs]
         rows += [
             [

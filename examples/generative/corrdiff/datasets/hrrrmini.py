@@ -40,13 +40,13 @@ class HRRRMiniDataset(DownscalingDataset):
         invariant_variables: Union[List[str], None] = ("elev_mean", "lsm_mean"),
     ):
         # load data
-        (self.input, self.input_variables) = _load_dataset(
+        self.input, self.input_variables = _load_dataset(
             data_path, "input", input_variables
         )
-        (self.output, self.output_variables) = _load_dataset(
+        self.output, self.output_variables = _load_dataset(
             data_path, "output", output_variables
         )
-        (self.invariants, self.invariant_variables) = _load_dataset(
+        self.invariants, self.invariant_variables = _load_dataset(
             data_path, "invariant", invariant_variables, stack_axis=0
         )
 
@@ -61,11 +61,11 @@ class HRRRMiniDataset(DownscalingDataset):
         # load normalization stats
         with open(stats_path, "r") as f:
             stats = json.load(f)
-        (input_mean, input_std) = _load_stats(stats, self.input_variables, "input")
-        (inv_mean, inv_std) = _load_stats(stats, self.invariant_variables, "invariant")
+        input_mean, input_std = _load_stats(stats, self.input_variables, "input")
+        inv_mean, inv_std = _load_stats(stats, self.invariant_variables, "invariant")
         self.input_mean = np.concatenate([input_mean, inv_mean], axis=0)
         self.input_std = np.concatenate([input_std, inv_std], axis=0)
-        (self.output_mean, self.output_std) = _load_stats(
+        self.output_mean, self.output_std = _load_stats(
             stats, self.output_variables, "output"
         )
 
@@ -74,7 +74,7 @@ class HRRRMiniDataset(DownscalingDataset):
         x = self.upsample(self.input[idx].copy())
 
         # add invariants to input
-        (i, j) = self.coords[idx]
+        i, j = self.coords[idx]
         inv = self.invariants[:, i : i + self.img_shape[0], j : j + self.img_shape[1]]
         x = np.concatenate([x, inv], axis=0)
 
@@ -82,7 +82,7 @@ class HRRRMiniDataset(DownscalingDataset):
 
         x = self.normalize_input(x)
         y = self.normalize_output(y)
-        return (y, x, 0)
+        return y, x, 0
 
     def __len__(self):
         return self.input.shape[0]
@@ -110,7 +110,8 @@ class HRRRMiniDataset(DownscalingDataset):
     def time(self) -> List:
         """Get time values from the dataset."""
         datetimes = (
-            datetime.datetime.utcfromtimestamp(t.tolist() / 1e9) for t in self.times
+            datetime.datetime.utcfromtimestamp(t.tolist() / 1000000000.0)
+            for t in self.times
         )
         return [convert_datetime_to_cftime(t) for t in datetimes]
 
@@ -151,7 +152,7 @@ def _load_dataset(data_path, group, variables=None, stack_axis=1):
         if variables is None:
             variables = list(ds.keys())
         data = np.stack([ds[v] for v in variables], axis=stack_axis)
-    return (data, variables)
+    return data, variables
 
 
 def _load_stats(stats, variables, group):
@@ -161,7 +162,7 @@ def _load_stats(stats, variables, group):
     std = np.array([stats[group][v]["std"] for v in variables])[:, None, None].astype(
         np.float32
     )
-    return (mean, std)
+    return mean, std
 
 
 @jit(nopython=True, parallel=True)
